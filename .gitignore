@@ -28,6 +28,21 @@ yarn-error.*
 
 # macOS
 .DS_Store
+
+# Windows
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Build outputs
+android/
+ios/
 *.pem
 
 # local env files
