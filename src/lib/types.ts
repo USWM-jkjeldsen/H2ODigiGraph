@@ -9,6 +9,18 @@ export interface Site {
   createdAt: string; // ISO date string
 }
 
+export type CaptureSource = 'camera' | 'library' | 'web-upload';
+
+export interface CaptureLocation {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  altitude?: number | null;
+  heading?: number | null;
+  speed?: number | null;
+  capturedAt: string;
+}
+
 /**
  * Pixel-space boundary corners the user defines on the chart image.
  * These define the mapping between pixel coords and real-world values.
@@ -43,11 +55,19 @@ export interface DigiSession {
   id: string;
   siteId: string;
   imageUri: string; // local file URI
+  croppedImageUri?: string; // local cropped graph image URI
   capturedAt: string; // ISO datetime
+  captureSource?: CaptureSource;
+  captureLocation?: CaptureLocation;
   status: 'captured' | 'bounded' | 'digitized' | 'exported';
   bounds?: GraphBounds;
   points?: DigiPoint[];
+  extractedLinePx?: { x: number; y: number }[]; // smoothed line used for final overlay
   exportedAt?: string;
+  cloudImagePath?: string;
+  cloudImageUrl?: string;
+  cloudCroppedImagePath?: string;
+  cloudCroppedImageUrl?: string;
 }
 
 /** One row in the CSV output */

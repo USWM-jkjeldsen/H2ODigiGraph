@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "H2ODigiGraph",
+    "name": "H2oDigiGraph",
     "slug": "h2odigraph",
     "version": "1.0.0",
     "scheme": "h2odigraph",
@@ -16,9 +16,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.h2odigraph.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "H2ODigiGraph needs camera access to photograph stream gage charts in the field.",
-        "NSPhotoLibraryUsageDescription": "H2ODigiGraph needs photo library access to select existing gage chart images.",
-        "NSPhotoLibraryAddUsageDescription": "H2ODigiGraph saves processed chart images to your photo library."
+        "NSCameraUsageDescription": "H2oDigiGraph needs camera access to photograph stream gage charts in the field.",
+        "NSLocationWhenInUseUsageDescription": "H2oDigiGraph uses your location to tag field-captured gage chart photos.",
+        "NSPhotoLibraryUsageDescription": "H2oDigiGraph needs photo library access to select existing gage chart images.",
+        "NSPhotoLibraryAddUsageDescription": "H2oDigiGraph saves processed chart images to your photo library."
       }
     },
     "android": {
@@ -29,6 +30,8 @@
       },
       "permissions": [
         "android.permission.CAMERA",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
@@ -43,14 +46,20 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "H2ODigiGraph needs camera access to photograph stream gage charts."
+          "cameraPermission": "H2oDigiGraph needs camera access to photograph stream gage charts."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "H2ODigiGraph accesses your photos to load gage chart images.",
-          "cameraPermission": "H2ODigiGraph uses the camera to capture gage chart images."
+          "photosPermission": "H2oDigiGraph accesses your photos to load gage chart images.",
+          "cameraPermission": "H2oDigiGraph uses the camera to capture gage chart images."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "H2oDigiGraph uses your location to tag field-captured gage chart photos."
         }
       ]
     ]

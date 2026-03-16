@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Colors } from '../src/lib/theme';
+import { SyncStatusPill } from '../src/components/SyncStatusPill';
 
 export default function RootLayout() {
   return (
@@ -11,10 +12,11 @@ export default function RootLayout() {
           headerStyle: { backgroundColor: Colors.primary },
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: '700' },
+          headerRight: () => <SyncStatusPill />,
           contentStyle: { backgroundColor: Colors.background },
         }}
       >
-        <Stack.Screen name="index" options={{ title: 'H2ODigiGraph — Sites' }} />
+        <Stack.Screen name="index" options={{ title: 'H2oDigiGraph — Sites' }} />
         <Stack.Screen name="site/[id]" options={{ title: 'Site Detail' }} />
         <Stack.Screen
           name="capture"

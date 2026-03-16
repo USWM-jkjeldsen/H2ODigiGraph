@@ -6,120 +6,215 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import type { GraphBounds } from '../lib/types';
 import { Colors, Spacing, FontSize } from '../lib/theme';
 
+/** Inputs for simplified chart calibration. */
+export interface BoundaryValues {
+  startDateTime: string;
+  startStageFt: number;
+  useAdvancedCalibration: boolean;
+  xStartDateTime?: string;
+  xEndDateTime?: string;
+  yRefStageFt?: number;
+}
+
 interface Props {
   initial?: Partial<GraphBounds>;
-  onSave: (bounds: GraphBounds) => void;
+  defaultUseAdvancedCalibration?: boolean;
+  calibrationPointStatus?: {
+    xStart: boolean;
+    xEnd: boolean;
+    yRef: boolean;
+  };
+  onPickCalibrationPoints?: () => void;
+  onSave: (values: BoundaryValues) => void;
+  onCancel: () => void;
 }
 
 type Draft = {
-  xMin: string;
-  xMax: string;
-  yMin: string;
-  yMax: string;
-  startDate: string;
-  endDate: string;
-  unit: 'ft' | 'm';
+  startDateTime: string;
+  startStageFt: string;
+  useAdvancedCalibration: boolean;
+  xStartDateTime: string;
+  xEndDateTime: string;
+  yRefStageFt: string;
 };
 
-export function BoundaryEditor({ initial, onSave }: Props) {
+export function BoundaryEditor({
+  initial,
+  defaultUseAdvancedCalibration,
+  calibrationPointStatus,
+  onPickCalibrationPoints,
+  onSave,
+  onCancel,
+}: Props) {
   const [draft, setDraft] = useState<Draft>({
-    xMin: String(initial?.xMin ?? '0'),
-    xMax: String(initial?.xMax ?? '365'),
-    yMin: String(initial?.yMin ?? '0'),
-    yMax: String(initial?.yMax ?? '10'),
-    startDate: initial?.startDate ?? '',
-    endDate: initial?.endDate ?? '',
-    unit: initial?.unit ?? 'ft',
+    startDateTime: initial?.startDate ?? '',
+    startStageFt: initial?.yMin != null ? String(initial.yMin) : '',
+    useAdvancedCalibration: Boolean(defaultUseAdvancedCalibration),
+    xStartDateTime: initial?.startDate ?? '',
+    xEndDateTime: initial?.endDate ?? '',
+    yRefStageFt: initial?.yMin != null ? String(initial.yMin) : '',
   });
   const [error, setError] = useState<string | null>(null);
 
   const set = (key: keyof Draft, val: string) => setDraft((d) => ({ ...d, [key]: val }));
+  const pointStatus = calibrationPointStatus ?? { xStart: false, xEnd: false, yRef: false };
 
   const handleSave = () => {
-    const xMin = parseFloat(draft.xMin);
-    const xMax = parseFloat(draft.xMax);
-    const yMin = parseFloat(draft.yMin);
-    const yMax = parseFloat(draft.yMax);
+    const startStageFt = parseFloat(draft.startStageFt);
+    const startTs = Date.parse(draft.startDateTime);
 
-    if ([xMin, xMax, yMin, yMax].some(isNaN)) {
-      setError('All numeric fields are required.');
+    if (isNaN(startStageFt)) {
+      setError('Starting stage height is required.');
       return;
     }
-    if (xMax <= xMin) {
-      setError('X max must be greater than X min.');
+    if (!draft.startDateTime || Number.isNaN(startTs)) {
+      setError('Start time is required. Use YYYY-MM-DD HH:mm.');
       return;
     }
-    if (yMax <= yMin) {
-      setError('Y max must be greater than Y min.');
-      return;
+
+    const payload: BoundaryValues = {
+      startDateTime: draft.startDateTime,
+      startStageFt,
+      useAdvancedCalibration: draft.useAdvancedCalibration,
+    };
+
+    if (draft.useAdvancedCalibration) {
+      const xStartTs = Date.parse(draft.xStartDateTime);
+      const xEndTs = Date.parse(draft.xEndDateTime);
+      const yRefStageFt = parseFloat(draft.yRefStageFt);
+      if (!draft.xStartDateTime || Number.isNaN(xStartTs)) {
+        setError('Advanced mode: known X start time is required.');
+        return;
+      }
+      if (!draft.xEndDateTime || Number.isNaN(xEndTs)) {
+        setError('Advanced mode: known X end time is required.');
+        return;
+      }
+      if (xEndTs <= xStartTs) {
+        setError('Advanced mode: known X end time must be after X start time.');
+        return;
+      }
+      if (Number.isNaN(yRefStageFt)) {
+        setError('Advanced mode: known Y stage value is required.');
+        return;
+      }
+      payload.xStartDateTime = draft.xStartDateTime;
+      payload.xEndDateTime = draft.xEndDateTime;
+      payload.yRefStageFt = yRefStageFt;
     }
-    if (!draft.startDate || !draft.endDate) {
-      setError('Start and end dates are required (YYYY-MM-DD).');
-      return;
-    }
+
     setError(null);
-
-    // originPx / farPx will already be set by the parent from GraphCanvas taps;
-    // we pass zeros here because BoundaryEditor only handles the numeric values.
-    onSave({
-      originPx: initial?.originPx ?? { x: 0, y: 0 },
-      farPx: initial?.farPx ?? { x: 0, y: 0 },
-      xMin,
-      xMax,
-      yMin,
-      yMax,
-      startDate: draft.startDate,
-      endDate: draft.endDate,
-      unit: draft.unit,
-    });
+    onSave(payload);
   };
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
-      <Text style={styles.heading}>Axis Boundaries</Text>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+    >
+      {/* Bottom-sheet handle */}
+      <View style={styles.handle} />
+
+      <View style={styles.headerRow}>
+        <Text style={styles.heading}>Graph Calibration</Text>
+        <TouchableOpacity onPress={onCancel} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+
       <Text style={styles.hint}>
-        Match these values to the axis labels printed on the chart paper.
+        Enter chart start time and starting stage height. The app auto-detects graph-paper spacing to compute
+        the x/y scale: 4 hours per small box and 0.1 ft per small box.
       </Text>
 
       <View style={styles.row}>
-        <Field label="X min (day / value)" value={draft.xMin} onChangeText={(v) => set('xMin', v)} />
-        <Field label="X max" value={draft.xMax} onChangeText={(v) => set('xMax', v)} />
+        <Field
+          label="Start time (YYYY-MM-DD HH:mm)"
+          value={draft.startDateTime}
+          onChangeText={(v) => set('startDateTime', v)}
+          placeholder="2026-03-13 00:00"
+          keyboardType="default"
+        />
       </View>
 
       <View style={styles.row}>
-        <Field label={`Y min (stage, ${draft.unit})`} value={draft.yMin} onChangeText={(v) => set('yMin', v)} />
-        <Field label={`Y max (stage, ${draft.unit})`} value={draft.yMax} onChangeText={(v) => set('yMax', v)} />
+        <Field
+          label="Starting stage height (ft)"
+          value={draft.startStageFt}
+          onChangeText={(v) => set('startStageFt', v)}
+          placeholder="e.g. 2.50"
+        />
       </View>
 
-      <Text style={styles.label}>Date range</Text>
-      <View style={styles.row}>
-        <Field label="Start date (YYYY-MM-DD)" value={draft.startDate} onChangeText={(v) => set('startDate', v)} />
-        <Field label="End date (YYYY-MM-DD)" value={draft.endDate} onChangeText={(v) => set('endDate', v)} />
+      <View style={styles.scaleCard}>
+        <Text style={styles.scaleTitle}>Chart Scale</Text>
+        <Text style={styles.scaleText}>Fine line: 4 hours (x), 0.1 ft (y)</Text>
+        <Text style={styles.scaleText}>Bold line: 1 day (x), 1.0 ft (y)</Text>
       </View>
 
-      <Text style={styles.label}>Unit</Text>
-      <View style={styles.unitRow}>
-        {(['ft', 'm'] as const).map((u) => (
-          <TouchableOpacity
-            key={u}
-            style={[styles.unitBtn, draft.unit === u && styles.unitBtnActive]}
-            onPress={() => set('unit', u)}
-          >
-            <Text style={[styles.unitBtnText, draft.unit === u && styles.unitBtnTextActive]}>
-              {u === 'ft' ? 'Feet (ft)' : 'Metres (m)'}
+      <View style={styles.advancedCard}>
+        <TouchableOpacity
+          style={styles.advancedToggle}
+          onPress={() => setDraft((d) => ({ ...d, useAdvancedCalibration: !d.useAdvancedCalibration }))}
+        >
+          <Text style={styles.advancedTitle}>Advanced Calibration</Text>
+          <Text style={styles.advancedToggleState}>
+            {draft.useAdvancedCalibration ? 'On' : 'Off'}
+          </Text>
+        </TouchableOpacity>
+        <Text style={styles.advancedHint}>
+          Optional fallback when auto-scale is off. Pick 3 reference points: X start, X end, and known Y value.
+        </Text>
+
+        {draft.useAdvancedCalibration ? (
+          <>
+            <TouchableOpacity style={styles.pickBtn} onPress={onPickCalibrationPoints}>
+              <Text style={styles.pickBtnText}>Pick / Re-pick 3 Reference Points</Text>
+            </TouchableOpacity>
+            <Text style={styles.pointStatusText}>
+              X start: {pointStatus.xStart ? 'set' : 'missing'}  |  X end: {pointStatus.xEnd ? 'set' : 'missing'}  |  Y ref: {pointStatus.yRef ? 'set' : 'missing'}
             </Text>
-          </TouchableOpacity>
-        ))}
+
+            <View style={styles.row}>
+              <Field
+                label="Known X start time (YYYY-MM-DD HH:mm)"
+                value={draft.xStartDateTime}
+                onChangeText={(v) => set('xStartDateTime', v)}
+                placeholder="2026-03-13 00:00"
+                keyboardType="default"
+              />
+            </View>
+            <View style={styles.row}>
+              <Field
+                label="Known X end time (YYYY-MM-DD HH:mm)"
+                value={draft.xEndDateTime}
+                onChangeText={(v) => set('xEndDateTime', v)}
+                placeholder="2026-03-20 00:00"
+                keyboardType="default"
+              />
+            </View>
+            <View style={styles.row}>
+              <Field
+                label="Known Y stage at Y reference point (ft)"
+                value={draft.yRefStageFt}
+                onChangeText={(v) => set('yRefStageFt', v)}
+                placeholder="e.g. 2.50"
+              />
+            </View>
+          </>
+        ) : null}
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-        <Text style={styles.saveBtnText}>Apply Boundaries</Text>
+        <Text style={styles.saveBtnText}>Apply</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -129,10 +224,14 @@ function Field({
   label,
   value,
   onChangeText,
+  placeholder,
+  keyboardType = 'decimal-pad',
 }: {
   label: string;
   value: string;
   onChangeText: (v: string) => void;
+  placeholder?: string;
+  keyboardType?: 'decimal-pad' | 'default';
 }) {
   return (
     <View style={styles.field}>
@@ -141,9 +240,10 @@ function Field({
         style={styles.input}
         value={value}
         onChangeText={onChangeText}
-        keyboardType="decimal-pad"
+        keyboardType={keyboardType}
         autoCapitalize="none"
         autoCorrect={false}
+        placeholder={placeholder}
         placeholderTextColor={Colors.textMuted}
       />
     </View>
@@ -151,13 +251,27 @@ function Field({
 }
 
 const styles = StyleSheet.create({
-  scroll: { flex: 1 },
-  container: { padding: Spacing.md, paddingBottom: 40 },
-  heading: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text, marginBottom: 4 },
+  scroll: { flexShrink: 1 },
+  container: { padding: Spacing.md, paddingBottom: Platform.OS === 'ios' ? 32 : Spacing.lg },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginBottom: Spacing.sm,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  heading: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  cancelText: { fontSize: FontSize.md, color: Colors.accent },
   hint: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.md },
   row: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.sm },
   field: { flex: 1 },
-  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, marginTop: Spacing.sm, marginBottom: 4 },
   fieldLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, marginBottom: 4 },
   input: {
     borderWidth: 1,
@@ -167,27 +281,67 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: FontSize.md,
     color: Colors.text,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceDim,
   },
-  unitRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: 4 },
-  unitBtn: {
-    flex: 1,
+  scaleCard: {
     borderWidth: 1,
     borderColor: Colors.border,
+    backgroundColor: Colors.surfaceDim,
+    borderRadius: 8,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  scaleTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text, marginBottom: 2 },
+  scaleText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  advancedCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    borderRadius: 8,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  advancedToggle: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  advancedTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.text },
+  advancedToggleState: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
+  advancedHint: {
+    marginTop: 6,
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+  },
+  pickBtn: {
+    marginTop: Spacing.sm,
+    backgroundColor: Colors.primaryLight,
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',
   },
-  unitBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primary },
-  unitBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  unitBtnTextActive: { color: '#fff', fontWeight: '700' },
-  error: { color: Colors.error, fontSize: FontSize.sm, marginTop: Spacing.sm },
+  pickBtnText: {
+    color: '#fff',
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+  },
+  pointStatusText: {
+    marginTop: 8,
+    marginBottom: 6,
+    color: Colors.textSecondary,
+    fontSize: FontSize.xs,
+  },
+  error: { color: Colors.error, fontSize: FontSize.sm, marginBottom: Spacing.sm },
   saveBtn: {
     backgroundColor: Colors.primary,
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: Spacing.lg,
+    marginTop: Spacing.sm,
   },
   saveBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
 });

@@ -26,6 +26,13 @@ const STATUS_COLOR: Record<DigiSession['status'], string> = {
   exported: Colors.success,
 };
 
+function getCaptureSourceLabel(session: DigiSession): string {
+  if (session.captureSource === 'camera') return 'Field capture';
+  if (session.captureSource === 'web-upload') return 'Web upload';
+  if (session.captureSource === 'library') return 'Library import';
+  return 'Unspecified source';
+}
+
 export default function SiteDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -127,6 +134,10 @@ export default function SiteDetailScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.sessionDate}>{item.capturedAt.slice(0, 10)}</Text>
                 <Text style={styles.sessionStatus}>{STATUS_LABEL[item.status]}</Text>
+                <Text style={styles.sessionMeta}>
+                  {getCaptureSourceLabel(item)}
+                  {item.captureLocation ? '  •  GPS attached' : ''}
+                </Text>
               </View>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
@@ -195,6 +206,7 @@ const styles = StyleSheet.create({
   statusDot: { width: 12, height: 12, borderRadius: 6, marginRight: Spacing.md },
   sessionDate: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
   sessionStatus: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  sessionMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 3 },
   chevron: { fontSize: 22, color: Colors.textMuted },
   fab: {
     position: 'absolute',

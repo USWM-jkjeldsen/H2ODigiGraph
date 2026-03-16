@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import type { DailyRecord, DigiSession, Site } from './types';
 
@@ -8,7 +8,7 @@ import type { DailyRecord, DigiSession, Site } from './types';
  */
 export function buildCsv(records: DailyRecord[], site: Site, session: DigiSession): string {
   const unit = records[0]?.unit ?? 'ft';
-  const header = `# H2ODigiGraph Export\n# Site: ${site.name} (${site.siteCode})\n# Captured: ${session.capturedAt}\n# Exported: ${new Date().toISOString()}\ndate,stage_height_${unit}`;
+  const header = `# H2oDigiGraph Export\n# Site: ${site.name} (${site.siteCode})\n# Captured: ${session.capturedAt}\n# Exported: ${new Date().toISOString()}\ndate,stage_height_${unit}`;
   const rows = records.map((r) => `${r.date},${r.stageHeight}`);
   return [header, ...rows].join('\n');
 }

@@ -10,8 +10,9 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { saveSession } from '../src/lib/storage';
-import type { DigiSession } from '../src/lib/types';
+import type { CaptureLocation, CaptureSource, DigiSession } from '../src/lib/types';
 import { Colors, Spacing, FontSize } from '../src/lib/theme';
 import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,7 +21,37 @@ export default function CaptureScreen() {
   const { siteId } = useLocalSearchParams<{ siteId: string }>();
   const router = useRouter();
   const [preview, setPreview] = useState<string | null>(null);
+  const [captureSource, setCaptureSource] = useState<CaptureSource | null>(null);
+  const [captureLocation, setCaptureLocation] = useState<CaptureLocation | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const captureFieldLocation = async (): Promise<CaptureLocation | null> => {
+    if (Platform.OS === 'web') return null;
+
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        return null;
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      return {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy,
+        altitude: location.coords.altitude,
+        heading: location.coords.heading,
+        speed: location.coords.speed,
+        capturedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      console.warn('Location capture failed', err);
+      return null;
+    }
+  };
 
   const openCamera = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -34,7 +65,10 @@ export default function CaptureScreen() {
       allowsEditing: false,
     });
     if (!result.canceled && result.assets[0]) {
+      const location = await captureFieldLocation();
       setPreview(result.assets[0].uri);
+      setCaptureSource('camera');
+      setCaptureLocation(location);
     }
   };
 
@@ -51,6 +85,8 @@ export default function CaptureScreen() {
     });
     if (!result.canceled && result.assets[0]) {
       setPreview(result.assets[0].uri);
+      setCaptureSource(Platform.OS === 'web' ? 'web-upload' : 'library');
+      setCaptureLocation(null);
     }
   };
 
@@ -62,6 +98,8 @@ export default function CaptureScreen() {
       siteId,
       imageUri: preview,
       capturedAt: new Date().toISOString(),
+      captureSource: captureSource ?? (Platform.OS === 'web' ? 'web-upload' : 'library'),
+      captureLocation: captureLocation ?? undefined,
       status: 'captured',
     };
     await saveSession(session);
@@ -74,8 +112,25 @@ export default function CaptureScreen() {
       {preview ? (
         <>
           <Image source={{ uri: preview }} style={styles.preview} resizeMode="contain" />
+          <View style={styles.metadataBar}>
+            <Text style={styles.metadataText}>
+              Source: {captureSource === 'camera' ? 'Field camera' : captureSource === 'web-upload' ? 'Web upload' : 'Photo library'}
+            </Text>
+            <Text style={styles.metadataText}>
+              {captureLocation
+                ? `GPS: ${captureLocation.latitude.toFixed(5)}, ${captureLocation.longitude.toFixed(5)}`
+                : 'GPS: not attached'}
+            </Text>
+          </View>
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={() => setPreview(null)}>
+            <TouchableOpacity
+              style={styles.secondaryBtn}
+              onPress={() => {
+                setPreview(null);
+                setCaptureSource(null);
+                setCaptureLocation(null);
+              }}
+            >
               <Text style={styles.secondaryBtnText}>Retake / Choose Again</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -114,6 +169,16 @@ export default function CaptureScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   preview: { flex: 1, backgroundColor: '#000' },
+  metadataBar: {
+    backgroundColor: Colors.primaryDark,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    gap: 2,
+  },
+  metadataText: {
+    color: '#dceefe',
+    fontSize: FontSize.sm,
+  },
   actions: {
     flexDirection: 'row',
     padding: Spacing.md,
