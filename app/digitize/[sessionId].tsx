@@ -18,9 +18,9 @@ import {
   type CalibrationPointKey,
 } from '../../src/components/GraphCanvas';
 import { BoundaryEditor, type BoundaryValues } from '../../src/components/BoundaryEditor';
-import { getSessions, saveSession } from '../../src/lib/storage';
+import { getSessions, getUserTraceSettings, saveSession, saveUserTraceSettings } from '../../src/lib/storage';
 import { interpolateDailyValues, pixelToReal } from '../../src/lib/digitizer';
-import type { DigiSession, DigiPoint } from '../../src/lib/types';
+import type { DigiSession, DigiPoint, UserTraceSettings } from '../../src/lib/types';
 import { Colors, Spacing, FontSize } from '../../src/lib/theme';
 import { cropImageFromCanvasBox } from '../../src/lib/imageCrop';
 import { traceGraphLineNormalized } from '../../src/lib/autoTrace';
@@ -40,6 +40,95 @@ const FULL_TRACE_OPTIONS = {
   saturationWeight: 0.72,
   searchRadiusNorm: 0.17,
 } as const;
+const DEFAULT_TRACE_SETTINGS: UserTraceSettings = {
+  pencilColor: '#6d6d6d',
+  gridColor: '#3e9bd1',
+};
+
+function formatLocalDatePart(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatLocalTimePart(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function parseDateTimeLike(value: string): Date | null {
+  if (!value) return null;
+  const normalized = value.replace(' ', 'T');
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed;
+  }
+  const fallback = new Date(value);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function extractDatePart(value: string): string {
+  const parsed = parseDateTimeLike(value);
+  if (parsed) return formatLocalDatePart(parsed);
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
+function extractTimePart(value: string): string {
+  const parsed = parseDateTimeLike(value);
+  if (parsed) return formatLocalTimePart(parsed);
+  const match = value.match(/(\d{2}:\d{2})/);
+  return match ? match[1] : '';
+}
+
+function mergeDateAndTime(datePart: string, timePart: string): string {
+  if (!datePart) return '';
+  return `${datePart} ${timePart || '00:00'}`;
+}
+
+function normalizeDatePart(input: string): string {
+  if (!input) return '';
+  const trimmed = input.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const slash = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const mm = slash[1].padStart(2, '0');
+    const dd = slash[2].padStart(2, '0');
+    const yyyy = slash[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return trimmed;
+}
+
+function normalizeTimePart(input: string): string {
+  if (!input) return '00:00';
+  const trimmed = input.trim();
+  const hhmm = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!hhmm) return trimmed;
+  const hh = hhmm[1].padStart(2, '0');
+  return `${hh}:${hhmm[2]}`;
+}
+
+function normalizeHexColor(input: string): string {
+  const raw = input.trim().replace('#', '').toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(raw)) return '';
+  return `#${raw}`;
+}
+
+const WEB_DATE_TIME_INPUT_STYLE: React.CSSProperties = {
+  width: '100%',
+  maxWidth: '100%',
+  boxSizing: 'border-box',
+  border: `1px solid ${Colors.border}`,
+  borderRadius: 8,
+  padding: '8px 10px',
+  fontSize: FontSize.md,
+  color: Colors.text,
+  backgroundColor: Colors.surfaceDim,
+  outline: 'none',
+};
 
 export default function DigitizeScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
@@ -71,6 +160,13 @@ export default function DigitizeScreen() {
   const [yRefStageDraft, setYRefStageDraft] = useState('');
   const [x1DateTimeDraft, setX1DateTimeDraft] = useState('');
   const [x1StageDraft, setX1StageDraft] = useState('');
+  const [x0DatePartDraft, setX0DatePartDraft] = useState('');
+  const [x0TimePartDraft, setX0TimePartDraft] = useState('00:00');
+  const [x1DatePartDraft, setX1DatePartDraft] = useState('');
+  const [x1TimePartDraft, setX1TimePartDraft] = useState('00:00');
+  const [traceSettings, setTraceSettings] = useState<UserTraceSettings>(DEFAULT_TRACE_SETTINGS);
+  const [showTraceSettingsModal, setShowTraceSettingsModal] = useState(false);
+  const [traceSettingsError, setTraceSettingsError] = useState<string | null>(null);
   const lastFrameSnapshotRef = useRef<{
     sourceUri: string;
     frame: { x: number; y: number; width: number; height: number };
@@ -93,9 +189,13 @@ export default function DigitizeScreen() {
   useFocusEffect(
     useCallback(() => {
       (async () => {
-        const sessions = await getSessions();
+        const [sessions, storedTraceSettings] = await Promise.all([
+          getSessions(),
+          getUserTraceSettings(),
+        ]);
         const found = sessions.find((s) => s.id === sessionId) ?? null;
         setSession(found);
+        setTraceSettings(storedTraceSettings);
       })();
     }, [sessionId]),
   );
@@ -106,6 +206,58 @@ export default function DigitizeScreen() {
     setSession(updated);
     await saveSession(updated);
   };
+
+  const getTraceOptions = useCallback(() => {
+    const pencilColor = normalizeHexColor(traceSettings.pencilColor);
+    const gridColor = normalizeHexColor(traceSettings.gridColor);
+    return {
+      ...FULL_TRACE_OPTIONS,
+      pencilColorHex: pencilColor || undefined,
+      gridColorHex: gridColor || undefined,
+    };
+  }, [traceSettings.gridColor, traceSettings.pencilColor]);
+
+  const handleSaveTraceSettings = async () => {
+    const pencilColor = normalizeHexColor(traceSettings.pencilColor);
+    const gridColor = normalizeHexColor(traceSettings.gridColor);
+    if (!pencilColor || !gridColor) {
+      setTraceSettingsError('Use full hex colors like #6d6d6d and #3e9bd1.');
+      return;
+    }
+    const next = { pencilColor, gridColor };
+    setTraceSettings(next);
+    await saveUserTraceSettings(next);
+    setTraceSettingsError(null);
+    setShowTraceSettingsModal(false);
+    setMode('digitize');
+  };
+
+  const beginColorSampling = (target: 'pencil' | 'grid') => {
+    setShowTraceSettingsModal(false);
+    setTraceSettingsError(null);
+    setMode(target === 'pencil' ? 'pickPencilColor' : 'pickGridColor');
+    Alert.alert(
+      target === 'pencil' ? 'Sample Pencil Color' : 'Sample Grid Color',
+      target === 'pencil'
+        ? 'Tap a representative pencil/trace segment on the chart.'
+        : 'Tap a representative gridline on the chart.',
+    );
+  };
+
+  const handleTraceColorSampled = useCallback(async (target: 'pencil' | 'grid', hex: string) => {
+    const normalized = normalizeHexColor(hex);
+    if (!normalized) {
+      Alert.alert('Sample failed', 'Could not sample a valid color. Try again.');
+      return;
+    }
+    const next = target === 'pencil'
+      ? { ...traceSettings, pencilColor: normalized }
+      : { ...traceSettings, gridColor: normalized };
+    setTraceSettings(next);
+    await saveUserTraceSettings(next);
+    setMode('digitize');
+    Alert.alert('Color saved', `${target === 'pencil' ? 'Pencil' : 'Grid'} color set to ${normalized}.`);
+  }, [traceSettings]);
 
   const resolveFrame = useCallback(() => {
     if (imageFrame) return imageFrame;
@@ -147,7 +299,7 @@ export default function DigitizeScreen() {
     setAutoTracing(true);
     try {
       const segment = await traceGraphLineNormalized(sourceUri, {
-        ...FULL_TRACE_OPTIONS,
+        ...getTraceOptions(),
         xNormStart,
         xNormEnd,
         yNormHint,
@@ -177,6 +329,7 @@ export default function DigitizeScreen() {
         points: merged,
         extractedLinePx: buildExtractedLine(merged),
         status: 'digitized',
+        digitizedAt: session.digitizedAt ?? new Date().toISOString(),
       });
       Alert.alert('Refine complete', `Updated ${tracedSegment.length} points in selected section.`);
     } catch (err) {
@@ -185,7 +338,7 @@ export default function DigitizeScreen() {
     } finally {
       setAutoTracing(false);
     }
-  }, [buildExtractedLine, resolveFrame, session, updateSession]);
+  }, [buildExtractedLine, getTraceOptions, resolveFrame, session, updateSession]);
 
   // Step 1: bottom-left corner, Step 2: top-right corner
   const handleBoxStartSet = (px: { x: number; y: number }) => {
@@ -239,6 +392,8 @@ export default function DigitizeScreen() {
           points: [],
           extractedLinePx: [],
           status: 'captured',
+          digitizedAt: undefined,
+          exportedAt: undefined,
         });
       } catch (err) {
         console.warn('Could not crop/zoom selected bounds', err);
@@ -304,6 +459,8 @@ export default function DigitizeScreen() {
     if (guidedStep === 'pickX0' && key === 'xStart') {
       setCalibrationPoints((prev) => ({ ...prev, xStart: px }));
       setValueModalError(null);
+      setX0DatePartDraft(extractDatePart(x0DateTimeDraft));
+      setX0TimePartDraft(extractTimePart(x0DateTimeDraft) || '00:00');
       setValueModalStep('x0');
       setMode('idle');
       return;
@@ -320,6 +477,8 @@ export default function DigitizeScreen() {
     if (guidedStep === 'pickX1' && key === 'xEnd') {
       setCalibrationPoints((prev) => ({ ...prev, xEnd: px }));
       setValueModalError(null);
+      setX1DatePartDraft(extractDatePart(x1DateTimeDraft));
+      setX1TimePartDraft(extractTimePart(x1DateTimeDraft) || '00:00');
       setValueModalStep('x1');
       setMode('idle');
       return;
@@ -333,7 +492,13 @@ export default function DigitizeScreen() {
     return Number.isNaN(parsed.getTime()) ? new Date(dateLike) : parsed;
   };
 
-  const applyGuidedCalibrationAndTrace = async () => {
+  const applyGuidedCalibrationAndTrace = async (input?: {
+    x0DateTime?: string;
+    x1DateTime?: string;
+    x0Stage?: string;
+    yRefStage?: string;
+    x1Stage?: string;
+  }) => {
     if (!session || !imageFrame) {
       Alert.alert('Missing data', 'Please redraw the trace box and calibration points.');
       return;
@@ -352,13 +517,13 @@ export default function DigitizeScreen() {
       return;
     }
 
-    const x0Date = toIsoDate(x0DateTimeDraft);
-    const x1Date = toIsoDate(x1DateTimeDraft);
+    const x0Date = toIsoDate(input?.x0DateTime ?? x0DateTimeDraft);
+    const x1Date = toIsoDate(input?.x1DateTime ?? x1DateTimeDraft);
     const x0Ms = x0Date.getTime();
     const x1Ms = x1Date.getTime();
-    const x0Stage = parseFloat(x0StageDraft);
-    const yRefStage = parseFloat(yRefStageDraft);
-    const x1Stage = parseFloat(x1StageDraft);
+    const x0Stage = parseFloat(input?.x0Stage ?? x0StageDraft);
+    const yRefStage = parseFloat(input?.yRefStage ?? yRefStageDraft);
+    const x1Stage = parseFloat(input?.x1Stage ?? x1StageDraft);
     if (!Number.isFinite(x0Ms) || !Number.isFinite(x1Ms) || x1Ms <= x0Ms) {
       Alert.alert('Invalid time values', 'x1 date/time must be after x0 date/time.');
       return;
@@ -432,11 +597,13 @@ export default function DigitizeScreen() {
       points: [],
       extractedLinePx: [],
       status: 'bounded',
+      digitizedAt: undefined,
     });
 
     const clampNorm = (v: number) => Math.max(0, Math.min(1, v));
-    const xNormStart = clampNorm((xStartPoint.x - imageFrame.x) / imageFrame.width);
-    const xNormEnd = clampNorm((xEndPoint.x - imageFrame.x) / imageFrame.width);
+    const xNormMargin = 0.01;
+    const xNormStart = clampNorm((xStartPoint.x - imageFrame.x) / imageFrame.width - xNormMargin);
+    const xNormEnd = clampNorm((xEndPoint.x - imageFrame.x) / imageFrame.width + xNormMargin);
     // Use average y of x0/x1 — both were tapped directly on the line, so this
     // points the tracer at the actual line rather than the Y-ref annotation.
     // The image is already cropped to the box, so use a generous band (±40%) so
@@ -444,12 +611,12 @@ export default function DigitizeScreen() {
     // be at similar heights (which would otherwise collapse the band to near zero).
     const lineYAvg = (xStartPoint.y + xEndPoint.y) / 2;
     const yNormHint = clampNorm((lineYAvg - imageFrame.y) / imageFrame.height);
-    const yNormBand = 0.40;
+    const yNormBand = 0.45;
 
     setAutoTracing(true);
     try {
       const normalized = await traceGraphLineNormalized(session.croppedImageUri ?? session.imageUri, {
-        ...FULL_TRACE_OPTIONS,
+        ...getTraceOptions(),
         xNormStart,
         xNormEnd,
         yNormHint,
@@ -458,7 +625,7 @@ export default function DigitizeScreen() {
       if (normalized.length < 8) {
         Alert.alert('Trace not found', 'Calibration saved, but auto-trace could not find the line confidently.');
       } else {
-        const tracedRaw: DigiPoint[] = normalized.map((p) => {
+        let tracedRaw: DigiPoint[] = normalized.map((p) => {
           const px = {
             x: imageFrame.x + p.x * imageFrame.width,
             y: imageFrame.y + p.y * imageFrame.height,
@@ -466,6 +633,53 @@ export default function DigitizeScreen() {
           const real = pixelToReal(px, nextBounds, { width: 1, height: 1 });
           return { px, realX: real.realX, realY: real.realY };
         }).filter((point) => point.px.x >= xStartPoint.x && point.px.x <= xEndPoint.x);
+
+        // Repair right tail when the first pass stops short of x1 and creates a long straight bridge.
+        const rightMostX = tracedRaw.reduce((maxX, point) => Math.max(maxX, point.px.x), xStartPoint.x);
+        const tailGapPx = xEndPoint.x - rightMostX;
+        if (tailGapPx > Math.max(18, imageFrame.width * 0.04)) {
+          const tailStartNorm = clampNorm((rightMostX - imageFrame.x) / imageFrame.width - 0.02);
+          const tailEndNorm = clampNorm((xEndPoint.x - imageFrame.x) / imageFrame.width + 0.01);
+          const tailHintNorm = clampNorm((xEndPoint.y - imageFrame.y) / imageFrame.height);
+          const tailBand = 0.22;
+
+          const tailNormalized = await traceGraphLineNormalized(session.croppedImageUri ?? session.imageUri, {
+            ...getTraceOptions(),
+            xSamples: 110,
+            xNormStart: tailStartNorm,
+            xNormEnd: tailEndNorm,
+            yNormHint: tailHintNorm,
+            yNormBand: tailBand,
+          });
+
+          if (tailNormalized.length >= 3) {
+            const tailPoints = tailNormalized.map((p) => {
+              const px = {
+                x: imageFrame.x + p.x * imageFrame.width,
+                y: imageFrame.y + p.y * imageFrame.height,
+              };
+              const real = pixelToReal(px, nextBounds, { width: 1, height: 1 });
+              return { px, realX: real.realX, realY: real.realY };
+            }).filter((point) => point.px.x >= xStartPoint.x && point.px.x <= xEndPoint.x);
+
+            // Keep tail detail, but avoid over-densifying this repair segment.
+            const tailSpacingPx = Math.max(2.5, imageFrame.width * 0.0035);
+            const thinnedTail: DigiPoint[] = [];
+            let lastAcceptedX = Number.NEGATIVE_INFINITY;
+            for (const point of tailPoints.sort((a, b) => a.px.x - b.px.x)) {
+              if (point.px.x - lastAcceptedX >= tailSpacingPx || point.px.x >= xEndPoint.x - 1) {
+                thinnedTail.push(point);
+                lastAcceptedX = point.px.x;
+              }
+            }
+
+            const mergedByX = new Map<number, DigiPoint>();
+            for (const point of [...tracedRaw, ...thinnedTail]) {
+              mergedByX.set(Math.round(point.px.x * 2), point);
+            }
+            tracedRaw = Array.from(mergedByX.values()).sort((a, b) => a.px.x - b.px.x);
+          }
+        }
 
         // Keep interior traced points, but pin the series to exact x0/x1 calibration
         // anchors so exported values always honor the entered endpoint stages.
@@ -491,6 +705,7 @@ export default function DigitizeScreen() {
           points: tracedPoints,
           extractedLinePx: tracedPoints.map((p) => p.px),
           status: 'digitized',
+          digitizedAt: session.digitizedAt ?? new Date().toISOString(),
         });
       }
     } catch (err) {
@@ -509,10 +724,14 @@ export default function DigitizeScreen() {
 
   const handleValueModalContinue = async () => {
     if (valueModalStep === 'x0') {
+      const nextDate = normalizeDatePart(x0DatePartDraft);
+      const nextTime = normalizeTimePart(x0TimePartDraft);
+      const composed = mergeDateAndTime(nextDate, nextTime);
+      setX0DateTimeDraft(composed);
       const stage = parseFloat(x0StageDraft);
-      const parsed = toIsoDate(x0DateTimeDraft);
+      const parsed = toIsoDate(composed);
       if (!Number.isFinite(parsed.getTime())) {
-        setValueModalError('Enter a valid x0 date/time in YYYY-MM-DD HH:mm format.');
+        setValueModalError('Enter a valid x0 date/time. Use YYYY-MM-DD (or MM/DD/YYYY) and HH:mm.');
         return;
       }
       if (!Number.isFinite(stage)) {
@@ -542,10 +761,14 @@ export default function DigitizeScreen() {
     }
 
     if (valueModalStep === 'x1') {
+      const nextDate = normalizeDatePart(x1DatePartDraft);
+      const nextTime = normalizeTimePart(x1TimePartDraft);
+      const composed = mergeDateAndTime(nextDate, nextTime);
+      setX1DateTimeDraft(composed);
       const stage = parseFloat(x1StageDraft);
-      const parsed = toIsoDate(x1DateTimeDraft);
+      const parsed = toIsoDate(composed);
       if (!Number.isFinite(parsed.getTime())) {
-        setValueModalError('Enter a valid x1 date/time in YYYY-MM-DD HH:mm format.');
+        setValueModalError('Enter a valid x1 date/time. Use YYYY-MM-DD (or MM/DD/YYYY) and HH:mm.');
         return;
       }
       if (!Number.isFinite(stage)) {
@@ -554,7 +777,13 @@ export default function DigitizeScreen() {
       }
       setValueModalStep(null);
       setValueModalError(null);
-      await applyGuidedCalibrationAndTrace();
+      await applyGuidedCalibrationAndTrace({
+        x0DateTime: mergeDateAndTime(normalizeDatePart(x0DatePartDraft), normalizeTimePart(x0TimePartDraft)),
+        x1DateTime: composed,
+        x0Stage: x0StageDraft,
+        yRefStage: yRefStageDraft,
+        x1Stage: x1StageDraft,
+      });
     }
   };
 
@@ -650,6 +879,8 @@ export default function DigitizeScreen() {
       points: [],
       extractedLinePx: [],
       status: 'captured',
+      digitizedAt: undefined,
+      exportedAt: undefined,
     });
 
     Alert.alert(
@@ -711,6 +942,8 @@ export default function DigitizeScreen() {
       points: [],
       extractedLinePx: [],
       status: 'bounded',
+      digitizedAt: undefined,
+      exportedAt: undefined,
     };
 
     if (canvasSize && canvasSize.width > 1 && canvasSize.height > 1) {
@@ -863,7 +1096,12 @@ export default function DigitizeScreen() {
   const handlePointAdded = async (point: DigiPoint) => {
     if (!session) return;
     const points = [...(session.points ?? []), point];
-    await updateSession({ points, extractedLinePx: buildExtractedLine(points), status: 'digitized' });
+    await updateSession({
+      points,
+      extractedLinePx: buildExtractedLine(points),
+      status: 'digitized',
+      digitizedAt: session.digitizedAt ?? new Date().toISOString(),
+    });
   };
 
   const handlePointRemoved = async (index: number) => {
@@ -925,15 +1163,6 @@ export default function DigitizeScreen() {
 
     setAutoTracing(true);
     try {
-      const normalized = await traceGraphLineNormalized(sourceUri, FULL_TRACE_OPTIONS);
-      if (normalized.length < 8) {
-        Alert.alert(
-          'Trace not found',
-          'Could not confidently trace the line. You can still place points manually.',
-        );
-        return;
-      }
-
       const frame = imageFrame
         ? imageFrame
         : {
@@ -948,6 +1177,25 @@ export default function DigitizeScreen() {
         return;
       }
 
+      const xBoundMin = Math.min(session.bounds.originPx.x, session.bounds.farPx.x);
+      const xBoundMax = Math.max(session.bounds.originPx.x, session.bounds.farPx.x);
+      const clampNorm = (v: number) => Math.max(0, Math.min(1, v));
+      const xNormStart = clampNorm((xBoundMin - frame.x) / frame.width - 0.01);
+      const xNormEnd = clampNorm((xBoundMax - frame.x) / frame.width + 0.01);
+
+      const normalized = await traceGraphLineNormalized(sourceUri, {
+        ...getTraceOptions(),
+        xNormStart,
+        xNormEnd,
+      });
+      if (normalized.length < 5) {
+        Alert.alert(
+          'Trace not found',
+          'Could not confidently trace the line. You can still place points manually.',
+        );
+        return;
+      }
+
       const tracedPoints: DigiPoint[] = normalized.map((p) => {
         const px = {
           x: frame.x + p.x * frame.width,
@@ -955,13 +1203,19 @@ export default function DigitizeScreen() {
         };
         const real = pixelToReal(px, session.bounds!, { width: 1, height: 1 });
         return { px, realX: real.realX, realY: real.realY };
-      });
+      }).filter((point) => point.px.x >= xBoundMin && point.px.x <= xBoundMax);
+
+      if (tracedPoints.length < 5) {
+        Alert.alert('Trace constrained', 'Trace points were outside calibrated x0..x1 bounds. Try refine box or adjust colors.');
+        return;
+      }
 
       setPreTraceSnapshot(session.points ?? []);
       await updateSession({
         points: tracedPoints,
         extractedLinePx: tracedPoints.map((p) => p.px),
         status: 'digitized',
+        digitizedAt: session.digitizedAt ?? new Date().toISOString(),
       });
       setMode('digitize');
       Alert.alert('Auto trace complete', `Generated ${tracedPoints.length} points.`);
@@ -980,6 +1234,7 @@ export default function DigitizeScreen() {
       points: pts,
       extractedLinePx: buildExtractedLine(pts),
       status: pts.length > 0 ? 'digitized' : 'bounded',
+      digitizedAt: pts.length > 0 ? session?.digitizedAt ?? new Date().toISOString() : undefined,
     });
     setPreTraceSnapshot(null);
   };
@@ -1043,6 +1298,9 @@ export default function DigitizeScreen() {
           onPointAdded={handlePointAdded}
           onPointRemoved={handlePointRemoved}
           onPointMoved={handlePointMoved}
+          onTraceColorSampled={(target, hex) => {
+            void handleTraceColorSampled(target, hex);
+          }}
         />
       </View>
 
@@ -1079,7 +1337,15 @@ export default function DigitizeScreen() {
               active={false}
               onPress={() => {
                 // Clear the crop back to the original image and start box-drawing fresh
-                updateSession({ croppedImageUri: undefined, bounds: undefined, points: [], extractedLinePx: [], status: 'new' });
+                updateSession({
+                  croppedImageUri: undefined,
+                  bounds: undefined,
+                  points: [],
+                  extractedLinePx: [],
+                  status: 'new',
+                  digitizedAt: undefined,
+                  exportedAt: undefined,
+                });
                 setBoxSelectionMode('bounds');
                 setPendingBoxStart(null);
                 setPendingBoxEnd(null);
@@ -1140,6 +1406,15 @@ export default function DigitizeScreen() {
               pendingRefineStart.current = null;
               pendingRefineEnd.current = null;
               setMode('setBoxStart');
+            }}
+          />
+          <ToolBtn
+            label="Trace Colors"
+            active={showTraceSettingsModal || mode === 'pickPencilColor' || mode === 'pickGridColor'}
+            disabled={autoTracing}
+            onPress={() => {
+              setTraceSettingsError(null);
+              setShowTraceSettingsModal(true);
             }}
           />
           <ToolBtn
@@ -1219,16 +1494,65 @@ export default function DigitizeScreen() {
 
             {valueModalStep === 'x0' || valueModalStep === 'x1' ? (
               <>
-                <Text style={styles.valueLabel}>Date/time (YYYY-MM-DD HH:mm)</Text>
-                <TextInput
-                  style={styles.valueInput}
-                  value={valueModalStep === 'x0' ? x0DateTimeDraft : x1DateTimeDraft}
-                  onChangeText={valueModalStep === 'x0' ? setX0DateTimeDraft : setX1DateTimeDraft}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder={valueModalStep === 'x0' ? '2026-03-13 00:00' : '2026-03-20 00:00'}
-                  placeholderTextColor={Colors.textMuted}
-                />
+                <Text style={styles.valueLabel}>Date and time</Text>
+                {Platform.OS === 'web' ? (
+                  <View style={styles.dateTimePickerRow}>
+                    <View style={styles.dateTimePickerCol}>
+                      <Text style={styles.dateTimePickerLabel}>Date</Text>
+                      <input
+                        type="date"
+                        value={valueModalStep === 'x0' ? x0DatePartDraft : x1DatePartDraft}
+                        onChange={(event) => {
+                          const nextDate = normalizeDatePart(event.target.value);
+                          if (valueModalStep === 'x0') setX0DatePartDraft(nextDate);
+                          else setX1DatePartDraft(nextDate);
+                        }}
+                        style={WEB_DATE_TIME_INPUT_STYLE}
+                      />
+                    </View>
+                    <View style={styles.dateTimePickerCol}>
+                      <Text style={styles.dateTimePickerLabel}>Time</Text>
+                      <input
+                        type="time"
+                        value={valueModalStep === 'x0' ? x0TimePartDraft : x1TimePartDraft}
+                        step={60}
+                        onChange={(event) => {
+                          const nextTime = normalizeTimePart(event.target.value);
+                          if (valueModalStep === 'x0') setX0TimePartDraft(nextTime);
+                          else setX1TimePartDraft(nextTime);
+                        }}
+                        style={WEB_DATE_TIME_INPUT_STYLE}
+                      />
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.dateTimePickerRow}>
+                    <View style={styles.dateTimePickerCol}>
+                      <Text style={styles.dateTimePickerLabel}>Date (YYYY-MM-DD or MM/DD/YYYY)</Text>
+                      <TextInput
+                        style={styles.valueInput}
+                        value={valueModalStep === 'x0' ? x0DatePartDraft : x1DatePartDraft}
+                        onChangeText={valueModalStep === 'x0' ? setX0DatePartDraft : setX1DatePartDraft}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        placeholder={valueModalStep === 'x0' ? '2026-03-13' : '2026-03-20'}
+                        placeholderTextColor={Colors.textMuted}
+                      />
+                    </View>
+                    <View style={styles.dateTimePickerCol}>
+                      <Text style={styles.dateTimePickerLabel}>Time (HH:mm)</Text>
+                      <TextInput
+                        style={styles.valueInput}
+                        value={valueModalStep === 'x0' ? x0TimePartDraft : x1TimePartDraft}
+                        onChangeText={valueModalStep === 'x0' ? setX0TimePartDraft : setX1TimePartDraft}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        placeholder="00:00"
+                        placeholderTextColor={Colors.textMuted}
+                      />
+                    </View>
+                  </View>
+                )}
               </>
             ) : null}
 
@@ -1260,6 +1584,70 @@ export default function DigitizeScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.valueSaveBtn} onPress={() => void handleValueModalContinue()}>
                 <Text style={styles.valueSaveText}>{valueModalStep === 'x1' ? 'Apply + Trace' : 'Continue'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showTraceSettingsModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowTraceSettingsModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.valueModalCard}>
+            <Text style={styles.valueModalTitle}>Trace Color Settings</Text>
+            <Text style={styles.valueModalHint}>
+              Save pencil and grid colors once, then auto-trace will reuse them for future sessions.
+            </Text>
+
+            <Text style={styles.valueLabel}>Pencil color (hex)</Text>
+            <View style={styles.colorRow}>
+              <View style={[styles.colorPreview, { backgroundColor: traceSettings.pencilColor }]} />
+              <TextInput
+                style={[styles.valueInput, styles.colorInput]}
+                value={traceSettings.pencilColor}
+                onChangeText={(value) => setTraceSettings((prev) => ({ ...prev, pencilColor: value }))}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="#6d6d6d"
+                placeholderTextColor={Colors.textMuted}
+              />
+              <TouchableOpacity style={styles.sampleBtn} onPress={() => beginColorSampling('pencil')}>
+                <Text style={styles.sampleBtnText}>Sample</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.valueLabel}>Grid color (hex)</Text>
+            <View style={styles.colorRow}>
+              <View style={[styles.colorPreview, { backgroundColor: traceSettings.gridColor }]} />
+              <TextInput
+                style={[styles.valueInput, styles.colorInput]}
+                value={traceSettings.gridColor}
+                onChangeText={(value) => setTraceSettings((prev) => ({ ...prev, gridColor: value }))}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="#3e9bd1"
+                placeholderTextColor={Colors.textMuted}
+              />
+              <TouchableOpacity style={styles.sampleBtn} onPress={() => beginColorSampling('grid')}>
+                <Text style={styles.sampleBtnText}>Sample</Text>
+              </TouchableOpacity>
+            </View>
+
+            {traceSettingsError ? <Text style={styles.valueModalError}>{traceSettingsError}</Text> : null}
+
+            <View style={styles.valueModalActions}>
+              <TouchableOpacity
+                style={styles.valueCancelBtn}
+                onPress={() => setShowTraceSettingsModal(false)}
+              >
+                <Text style={styles.valueCancelText}>Close</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.valueSaveBtn} onPress={() => void handleSaveTraceSettings()}>
+                <Text style={styles.valueSaveText}>Save Colors</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1482,6 +1870,49 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     color: Colors.text,
     backgroundColor: Colors.surfaceDim,
+  },
+  colorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: 4,
+  },
+  colorPreview: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  colorInput: {
+    flex: 1,
+  },
+  sampleBtn: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 8,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 8,
+  },
+  sampleBtnText: {
+    color: '#fff',
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+  },
+  dateTimePickerRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    marginBottom: 2,
+  },
+  dateTimePickerCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  dateTimePickerLabel: {
+    color: Colors.textSecondary,
+    fontSize: FontSize.xs,
   },
   valueModalError: {
     color: Colors.error,

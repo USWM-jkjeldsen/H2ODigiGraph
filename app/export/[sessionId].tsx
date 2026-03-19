@@ -10,9 +10,9 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { getSessions, getSites, saveSession } from '../../src/lib/storage';
-import { interpolateDailyValues } from '../../src/lib/digitizer';
+import { interpolate4HourValues, interpolateDailyValues } from '../../src/lib/digitizer';
 import { exportCsv } from '../../src/lib/csvExport';
-import type { DigiSession, Site, DailyRecord } from '../../src/lib/types';
+import type { DigiSession, Site, DailyRecord, ExportInterval } from '../../src/lib/types';
 import { Colors, Spacing, FontSize } from '../../src/lib/theme';
 
 export default function ExportScreen() {
@@ -20,6 +20,7 @@ export default function ExportScreen() {
   const [session, setSession] = useState<DigiSession | null>(null);
   const [site, setSite] = useState<Site | null>(null);
   const [records, setRecords] = useState<DailyRecord[]>([]);
+  const [interval, setInterval] = useState<ExportInterval>('day');
   const [exporting, setExporting] = useState(false);
 
   useFocusEffect(
@@ -29,7 +30,10 @@ export default function ExportScreen() {
         const found = sessions.find((s) => s.id === sessionId) ?? null;
         setSession(found);
         if (found?.bounds && found.points && found.points.length >= 2) {
-          const r = interpolateDailyValues(found.points, found.bounds);
+          const r =
+            interval === 'day'
+              ? interpolateDailyValues(found.points, found.bounds)
+              : interpolate4HourValues(found.points, found.bounds);
           setRecords(r);
         }
         if (found) {
@@ -37,16 +41,17 @@ export default function ExportScreen() {
           setSite(sites.find((s) => s.id === found.siteId) ?? null);
         }
       })();
-    }, [sessionId]),
+    }, [sessionId, interval]),
   );
 
   const handleExport = async () => {
     if (!session || !site || records.length === 0) return;
     setExporting(true);
     try {
-      await exportCsv(records, site, session);
+      await exportCsv(records, site, session, interval);
       await saveSession({ ...session, status: 'exported', exportedAt: new Date().toISOString() });
-      Alert.alert('Export complete', `${records.length} daily records exported.`);
+      const intervalLabel = interval === 'day' ? 'daily' : '4-hour';
+      Alert.alert('Export complete', `${records.length} ${intervalLabel} records exported.`);
     } catch (err) {
       Alert.alert('Export failed', String(err));
     } finally {
@@ -70,13 +75,31 @@ export default function ExportScreen() {
           {site?.name ?? '—'} ({site?.siteCode ?? '—'})
         </Text>
         <Text style={styles.headerMeta}>
-          {records.length} daily records • {session.bounds?.unit ?? 'ft'}
+          {records.length} {interval === 'day' ? 'daily' : '4-hour'} records • {session.bounds?.unit ?? 'ft'}
         </Text>
         {session.bounds ? (
           <Text style={styles.headerMeta}>
             {session.bounds.startDate} → {session.bounds.endDate}
           </Text>
         ) : null}
+        <View style={styles.intervalSelector}>
+          <TouchableOpacity
+            style={[styles.intervalBtn, interval === 'day' && styles.intervalBtnActive]}
+            onPress={() => setInterval('day')}
+          >
+            <Text style={[styles.intervalBtnText, interval === 'day' && styles.intervalBtnTextActive]}>
+              By day
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.intervalBtn, interval === '4h' && styles.intervalBtnActive]}
+            onPress={() => setInterval('4h')}
+          >
+            <Text style={[styles.intervalBtnText, interval === '4h' && styles.intervalBtnTextActive]}>
+              4-hour intervals
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Preview table */}
@@ -85,7 +108,9 @@ export default function ExportScreen() {
         keyExtractor={(r) => r.date}
         ListHeaderComponent={
           <View style={styles.tableHeader}>
-            <Text style={[styles.tableCell, styles.tableCellHead]}>Date</Text>
+            <Text style={[styles.tableCell, styles.tableCellHead]}>
+              {interval === 'day' ? 'Date' : 'Date/Time'}
+            </Text>
             <Text style={[styles.tableCell, styles.tableCellHead, styles.tableCellRight]}>
               Stage ({records[0]?.unit ?? 'ft'})
             </Text>
@@ -126,6 +151,31 @@ const styles = StyleSheet.create({
   header: { backgroundColor: Colors.primaryDark, padding: Spacing.md },
   headerTitle: { fontSize: FontSize.lg, fontWeight: '700', color: '#fff' },
   headerMeta: { fontSize: FontSize.sm, color: Colors.accent, marginTop: 2 },
+  intervalSelector: {
+    marginTop: Spacing.sm,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 10,
+    padding: 4,
+    gap: 6,
+  },
+  intervalBtn: {
+    flex: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  intervalBtnActive: {
+    backgroundColor: '#fff',
+  },
+  intervalBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  intervalBtnTextActive: {
+    color: Colors.primaryDark,
+  },
   tableHeader: {
     flexDirection: 'row',
     backgroundColor: Colors.surfaceDim,

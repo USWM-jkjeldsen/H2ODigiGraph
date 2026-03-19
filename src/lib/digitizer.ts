@@ -53,16 +53,55 @@ export function interpolateDailyValues(
   for (let d = 0; d < totalDays; d++) {
     const dateObj = new Date(start);
     dateObj.setDate(start.getDate() + d);
-    // Format in local time — toISOString() would produce UTC and shift dates in non-UTC timezones
     const y = dateObj.getFullYear();
     const mo = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dy = String(dateObj.getDate()).padStart(2, '0');
     const dateStr = `${y}-${mo}-${dy}`;
 
-    // Map calendar day to realX space (0..xMax-xMin range)
-    const dayFraction = (d / (totalDays - 1)) * (bounds.xMax - bounds.xMin) + bounds.xMin;
-
+    const dayFraction = (d / Math.max(1, totalDays - 1)) * (bounds.xMax - bounds.xMin) + bounds.xMin;
     const stageHeight = linearInterpolate(sorted, dayFraction);
+    if (stageHeight !== null) {
+      records.push({ date: dateStr, stageHeight: Math.round(stageHeight * 1000) / 1000, unit: bounds.unit });
+    }
+  }
+
+  return records;
+}
+
+/**
+ * Interpolate digitised points into fixed 4-hour records.
+ */
+export function interpolate4HourValues(
+  points: DigiPoint[],
+  bounds: GraphBounds,
+): DailyRecord[] {
+  if (points.length < 2) return [];
+
+  const sorted = [...points].sort((a, b) => a.realX - b.realX);
+
+  const startMs = new Date(bounds.startDate).getTime();
+  const endMs = new Date(bounds.endDate).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
+
+  const totalDurationMs = endMs - startMs;
+  const intervalMs = 4 * 60 * 60 * 1000;
+
+  const records: DailyRecord[] = [];
+
+  for (let ts = startMs; ts <= endMs; ts += intervalMs) {
+    const dateObj = new Date(ts);
+
+    const y = dateObj.getFullYear();
+    const mo = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dy = String(dateObj.getDate()).padStart(2, '0');
+    const hh = String(dateObj.getHours()).padStart(2, '0');
+    const mm = String(dateObj.getMinutes()).padStart(2, '0');
+    const dateStr = `${y}-${mo}-${dy} ${hh}:${mm}`;
+
+    const position = (ts - startMs) / totalDurationMs;
+    const targetX = position * (bounds.xMax - bounds.xMin) + bounds.xMin;
+
+    const stageHeight = linearInterpolate(sorted, targetX);
     if (stageHeight !== null) {
       records.push({ date: dateStr, stageHeight: Math.round(stageHeight * 1000) / 1000, unit: bounds.unit });
     }

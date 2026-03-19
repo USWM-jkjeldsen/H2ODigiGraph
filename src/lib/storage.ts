@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Site, DigiSession } from './types';
+import type { Site, DigiSession, UserTraceSettings } from './types';
 import {
   fetchSessionsFromCloud,
   fetchSitesFromCloud,
@@ -13,6 +13,11 @@ import { setSyncStatus } from './syncState';
 
 const SITES_KEY = 'h2odigraph:sites';
 const SESSIONS_KEY = 'h2odigraph:sessions';
+const USER_TRACE_SETTINGS_KEY = 'h2odigraph:user-trace-settings';
+const DEFAULT_USER_TRACE_SETTINGS: UserTraceSettings = {
+  pencilColor: '#6d6d6d',
+  gridColor: '#3e9bd1',
+};
 
 function toErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) {
@@ -258,4 +263,24 @@ export async function manualCloudRefresh(): Promise<{ sites: number; sessions: n
     setSyncStatus('error', toErrorMessage(err));
     throw err;
   }
+}
+
+export async function getUserTraceSettings(): Promise<UserTraceSettings> {
+  const raw = await AsyncStorage.getItem(USER_TRACE_SETTINGS_KEY);
+  if (!raw) {
+    return DEFAULT_USER_TRACE_SETTINGS;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserTraceSettings>;
+    return {
+      pencilColor: parsed.pencilColor ?? DEFAULT_USER_TRACE_SETTINGS.pencilColor,
+      gridColor: parsed.gridColor ?? DEFAULT_USER_TRACE_SETTINGS.gridColor,
+    };
+  } catch {
+    return DEFAULT_USER_TRACE_SETTINGS;
+  }
+}
+
+export async function saveUserTraceSettings(settings: UserTraceSettings): Promise<void> {
+  await AsyncStorage.setItem(USER_TRACE_SETTINGS_KEY, JSON.stringify(settings));
 }

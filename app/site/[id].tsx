@@ -34,6 +34,35 @@ function getCaptureSourceLabel(session: DigiSession): string {
   return 'Unspecified source';
 }
 
+function getSessionDataDateIso(session: DigiSession): string {
+  return session.bounds?.startDate ?? session.capturedAt;
+}
+
+function getSessionDataDateRangeLabel(session: DigiSession): string {
+  if (session.bounds?.startDate && session.bounds?.endDate) {
+    return `${formatDateTime(session.bounds.startDate)} → ${formatDateTime(session.bounds.endDate)}`;
+  }
+  return formatDateTime(session.capturedAt);
+}
+
+function toSortableMs(isoLike: string): number {
+  const ms = Date.parse(isoLike);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function formatDateTime(isoLike?: string): string {
+  if (!isoLike) return '—';
+  const parsed = new Date(isoLike);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 export default function SiteDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -48,7 +77,11 @@ export default function SiteDetailScreen() {
         setSite(found);
         if (found) {
           const s = await getSessionsForSite(found.id);
-          setSessions(s.sort((a, b) => b.capturedAt.localeCompare(a.capturedAt)));
+          setSessions(
+            s.sort(
+              (a, b) => toSortableMs(getSessionDataDateIso(b)) - toSortableMs(getSessionDataDateIso(a)),
+            ),
+          );
         }
       })();
     }, [id]),
@@ -153,12 +186,15 @@ export default function SiteDetailScreen() {
               >
                 <View style={[styles.statusDot, { backgroundColor: STATUS_COLOR[item.status] }]} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.sessionDate}>{item.capturedAt.slice(0, 10)}</Text>
+                  <Text style={styles.sessionDate}>Data date: {getSessionDataDateRangeLabel(item)}</Text>
                   <Text style={styles.sessionStatus}>{STATUS_LABEL[item.status]}</Text>
                   <Text style={styles.sessionMeta}>
                     {getCaptureSourceLabel(item)}
                     {item.captureLocation ? '  •  GPS attached' : ''}
                   </Text>
+                  <Text style={styles.sessionMeta}>Captured: {formatDateTime(item.capturedAt)}</Text>
+                  <Text style={styles.sessionMeta}>Digitized: {formatDateTime(item.digitizedAt)}</Text>
+                  <Text style={styles.sessionMeta}>Exported: {formatDateTime(item.exportedAt)}</Text>
                 </View>
                 <Text style={styles.chevron}>›</Text>
               </TouchableOpacity>

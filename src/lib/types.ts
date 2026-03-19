@@ -63,6 +63,7 @@ export interface DigiSession {
   bounds?: GraphBounds;
   points?: DigiPoint[];
   extractedLinePx?: { x: number; y: number }[]; // smoothed line used for final overlay
+  digitizedAt?: string;
   exportedAt?: string;
   cloudImagePath?: string;
   cloudImageUrl?: string;
@@ -70,9 +71,16 @@ export interface DigiSession {
   cloudCroppedImageUrl?: string;
 }
 
+export type ExportInterval = 'day' | '4h';
+
 /** One row in the CSV output */
 export interface DailyRecord {
-  date: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD (day) or YYYY-MM-DD HH:mm (4-hour)
   stageHeight: number; // interpolated value
   unit: 'ft' | 'm';
+}
+
+export interface UserTraceSettings {
+  pencilColor: string;
+  gridColor: string;
 }

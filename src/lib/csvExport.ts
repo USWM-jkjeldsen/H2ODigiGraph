@@ -1,14 +1,20 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import type { DailyRecord, DigiSession, Site } from './types';
+import type { DailyRecord, DigiSession, ExportInterval, Site } from './types';
 
 /**
  * Build a CSV string from an array of DailyRecords.
  * Format: date,stage_height_ft  or  date,stage_height_m
  */
-export function buildCsv(records: DailyRecord[], site: Site, session: DigiSession): string {
+export function buildCsv(
+  records: DailyRecord[],
+  site: Site,
+  session: DigiSession,
+  interval: ExportInterval = 'day',
+): string {
   const unit = records[0]?.unit ?? 'ft';
-  const header = `# H2oDigiGraph Export\n# Site: ${site.name} (${site.siteCode})\n# Captured: ${session.capturedAt}\n# Exported: ${new Date().toISOString()}\ndate,stage_height_${unit}`;
+  const timeColumn = interval === 'day' ? 'date' : 'datetime';
+  const header = `# H2oDigiGraph Export\n# Site: ${site.name} (${site.siteCode})\n# Captured: ${session.capturedAt}\n# Exported: ${new Date().toISOString()}\n# Interval: ${interval === 'day' ? 'Daily' : '4-hour'}\n${timeColumn},stage_height_${unit}`;
   const rows = records.map((r) => `${r.date},${r.stageHeight}`);
   return [header, ...rows].join('\n');
 }
@@ -21,9 +27,11 @@ export async function exportCsv(
   records: DailyRecord[],
   site: Site,
   session: DigiSession,
+  interval: ExportInterval = 'day',
 ): Promise<string> {
-  const csv = buildCsv(records, site, session);
-  const filename = `${site.siteCode}_${session.capturedAt.slice(0, 10)}_stage.csv`;
+  const csv = buildCsv(records, site, session, interval);
+  const intervalSuffix = interval === 'day' ? 'daily' : '4h';
+  const filename = `${site.siteCode}_${session.capturedAt.slice(0, 10)}_stage_${intervalSuffix}.csv`;
 
   if (typeof document !== 'undefined') {
     // Web: trigger download

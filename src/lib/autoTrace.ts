@@ -62,6 +62,10 @@ export interface TraceOptions {
   targetLuminance?: number;
   /** Vertical search radius for continuity tracking in normalized units (default: 0.12) */
   searchRadiusNorm?: number;
+  /** Preferred pencil/trace color in hex (e.g. #6d6d6d). */
+  pencilColorHex?: string;
+  /** Known gridline color in hex (e.g. #3e9bd1) to penalize grid matching. */
+  gridColorHex?: string;
   /** Enable model-based AI tracing first (web only) */
   aiMode?: 'off' | 'openai';
   /** OpenAI API key used for AI tracing. If omitted, reads EXPO_PUBLIC_OPENAI_API_KEY. */
@@ -86,6 +90,17 @@ function quantile(values: number[], q: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseHexColor(hex?: string): { r: number; g: number; b: number } | null {
+  if (!hex) return null;
+  const normalized = hex.trim().replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+  };
 }
 
 function estimateEdgeY(anchorPoints: ScoredPoint[], edgeX: number, yMin: number, yMax: number): number {
@@ -474,6 +489,8 @@ export async function traceGraphLineNormalized(
   const smoothingRadius = Math.max(0, Math.floor(options?.smoothingRadius ?? 2));
   const saturationWeight = Math.max(0, options?.saturationWeight ?? 0.45);
   const targetLuminance = options?.targetLuminance ?? Math.max(75, Math.min(170, p25 + 34));
+  const pencilColor = parseHexColor(options?.pencilColorHex);
+  const gridColor = parseHexColor(options?.gridColorHex);
 
   const xPixStart = options?.xNormStart != null ? Math.max(0, Math.floor(options.xNormStart * w)) : 0;
   const xPixEnd   = options?.xNormEnd   != null ? Math.min(w, Math.ceil(options.xNormEnd   * w)) : w;
@@ -542,6 +559,10 @@ export async function traceGraphLineNormalized(
     const xx = Math.max(0, Math.min(w - 1, x));
     const yy = Math.max(0, Math.min(h - 1, y));
     const pos = yy * w + xx;
+    const idx = pos * 4;
+    const red = data[idx];
+    const green = data[idx + 1];
+    const blue = data[idx + 2];
     const lum = luminance[pos];
     const localMean = boxMeanLuminance(xx, yy, 5, 5);
     const residualDark = Math.max(0, localMean - lum);
@@ -558,8 +579,16 @@ export async function traceGraphLineNormalized(
     const tonalReward = Math.max(0, 140 - Math.abs(lum - targetLuminance) * 1.1) * 0.2;
     const distanceToBandEdge = Math.min(yy - yMin, yMax - yy);
     const edgePenalty = distanceToBandEdge < 6 ? (6 - distanceToBandEdge) * 7 : 0;
+    const colorDistance = (target: { r: number; g: number; b: number }): number => {
+      const dr = red - target.r;
+      const dg = green - target.g;
+      const db = blue - target.b;
+      return Math.sqrt(dr * dr + dg * dg + db * db);
+    };
+    const pencilBoost = pencilColor ? Math.max(0, 150 - colorDistance(pencilColor)) * 0.65 : 0;
+    const gridPenalty = gridColor ? Math.max(0, 130 - colorDistance(gridColor)) * 0.95 : 0;
 
-    return residualDark * 4.1 + contrast * contrastWeight + neutralBoost + tonalReward - redPenalty - saturationPenalty - darkInkPenalty - overDarkResidualPenalty - topZonePenalty - lightPenalty - edgePenalty;
+    return residualDark * 4.1 + contrast * contrastWeight + neutralBoost + tonalReward + pencilBoost - redPenalty - saturationPenalty - darkInkPenalty - overDarkResidualPenalty - topZonePenalty - lightPenalty - edgePenalty - gridPenalty;
   };
 
   if (xPixEnd - xPixStart < 2) {

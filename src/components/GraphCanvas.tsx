@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Image,
@@ -7,6 +7,7 @@ import {
   LayoutChangeEvent,
   PanResponder,
   Text,
+  Platform,
 } from 'react-native';
 import Svg, { Line, Circle, Polyline, Rect } from 'react-native-svg';
 import type { DigiPoint, GraphBounds } from '../lib/types';
@@ -20,6 +21,8 @@ export type CanvasMode =
   | 'setCalXStart'
   | 'setCalXEnd'
   | 'setCalYRef'
+  | 'pickPencilColor'
+  | 'pickGridColor'
   | 'digitize';
 export type CalibrationPointKey = 'xStart' | 'xEnd' | 'yRef';
 
@@ -32,8 +35,13 @@ const STEP_LABEL: Partial<Record<CanvasMode, string>> = {
   setCalXStart: 'Calibration 1 / 3  —  tap x0 start point on the line',
   setCalYRef: 'Calibration 2 / 3  —  tap a point with known Y value',
   setCalXEnd: 'Calibration 3 / 3  —  tap x1 end point on the line',
+  pickPencilColor: 'Tap a pencil/trace pixel to sample its color',
+  pickGridColor: 'Tap a gridline pixel to sample its color',
   digitize: 'Tap to add  •  Drag point to reposition  •  Tap point to remove',
 };
+
+const DIGITIZE_HIT_RADIUS_PX = 12;
+const DIGITIZE_ADD_MIN_SPACING_PX = 10;
 
 interface Props {
   imageUri: string;
@@ -52,6 +60,7 @@ interface Props {
   onPointAdded?: (point: DigiPoint) => void;
   onPointRemoved?: (index: number) => void;
   onPointMoved?: (index: number, point: DigiPoint) => void;
+  onTraceColorSampled?: (target: 'pencil' | 'grid', hex: string) => void;
 }
 
 export function GraphCanvas({
@@ -71,6 +80,7 @@ export function GraphCanvas({
   onPointAdded,
   onPointRemoved,
   onPointMoved,
+  onTraceColorSampled,
 }: Props) {
   const [imgDim, setImgDim] = useState({ width: 1, height: 1 });
   const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null);
@@ -78,6 +88,38 @@ export function GraphCanvas({
   const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
   const [draggingPointIndex, setDraggingPointIndex] = useState<number | null>(null);
   const [draggingPx, setDraggingPx] = useState<{ x: number; y: number } | null>(null);
+  const [zoomFocus, setZoomFocus] = useState<{ x: number; y: number } | null>(null);
+  const [zoomActive, setZoomActive] = useState(false);
+  const zoomDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ZOOM_HOLD_DELAY_MS = 120;
+
+  const isZoomMode =
+    mode === 'setCalXStart'
+    || mode === 'setCalXEnd'
+    || mode === 'setCalYRef'
+    || mode === 'pickPencilColor'
+    || mode === 'pickGridColor';
+
+  const clearZoomDelay = useCallback(() => {
+    if (zoomDelayTimerRef.current) {
+      clearTimeout(zoomDelayTimerRef.current);
+      zoomDelayTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isZoomMode) {
+      clearZoomDelay();
+      setZoomActive(false);
+      setZoomFocus(null);
+    }
+  }, [clearZoomDelay, isZoomMode]);
+
+  useEffect(() => {
+    return () => {
+      clearZoomDelay();
+    };
+  }, [clearZoomDelay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,6 +181,64 @@ export function GraphCanvas({
     [clampPoint],
   );
 
+  const sampleColorAtCanvasPoint = useCallback(async (px: { x: number; y: number }): Promise<string | null> => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined' || !sourceSize) {
+      return null;
+    }
+    if (
+      px.x < imageFrame.x
+      || px.x > imageFrame.x + imageFrame.width
+      || px.y < imageFrame.y
+      || px.y > imageFrame.y + imageFrame.height
+    ) {
+      return null;
+    }
+
+    const normX = (px.x - imageFrame.x) / Math.max(1, imageFrame.width);
+    const normY = (px.y - imageFrame.y) / Math.max(1, imageFrame.height);
+    const srcX = Math.max(0, Math.min(sourceSize.width - 1, Math.round(normX * sourceSize.width)));
+    const srcY = Math.max(0, Math.min(sourceSize.height - 1, Math.round(normY * sourceSize.height)));
+
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new window.Image();
+      element.crossOrigin = 'anonymous';
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('Failed to load image for color sampling.'));
+      element.src = imageUri;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = sourceSize.width;
+    canvas.height = sourceSize.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0, sourceSize.width, sourceSize.height);
+
+    const radius = 2;
+    const left = Math.max(0, srcX - radius);
+    const top = Math.max(0, srcY - radius);
+    const width = Math.min(sourceSize.width - left, radius * 2 + 1);
+    const height = Math.min(sourceSize.height - top, radius * 2 + 1);
+    const data = ctx.getImageData(left, top, width, height).data;
+
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const alpha = data[i + 3];
+      if (alpha === 0) continue;
+      sumR += data[i];
+      sumG += data[i + 1];
+      sumB += data[i + 2];
+      count += 1;
+    }
+    if (count === 0) return null;
+
+    const toHex = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+    return `#${toHex(sumR / count)}${toHex(sumG / count)}${toHex(sumB / count)}`;
+  }, [imageFrame.height, imageFrame.width, imageFrame.x, imageFrame.y, imageUri, sourceSize]);
+
   const commitDigitizePoint = useCallback(
     (px: { x: number; y: number }) => {
       if (mode !== 'digitize' || !bounds) return;
@@ -170,6 +270,14 @@ export function GraphCanvas({
   const handleResponderGrant = useCallback(
     (e: GestureResponderEvent) => {
       const px = getEventPoint(e);
+      if (isZoomMode) {
+        clearZoomDelay();
+        setZoomActive(false);
+        setZoomFocus(px);
+        zoomDelayTimerRef.current = setTimeout(() => {
+          setZoomActive(true);
+        }, ZOOM_HOLD_DELAY_MS);
+      }
 
       if (mode === 'setBoxStart' || mode === 'setBoxEnd') {
         setDragStart(px);
@@ -177,21 +285,29 @@ export function GraphCanvas({
         return;
       }
       if (mode === 'digitize') {
-        const HIT_RADIUS = 16;
-        const hitIdx = points.findIndex(
-          (p) => Math.hypot(p.px.x - px.x, p.px.y - px.y) < HIT_RADIUS,
-        );
+        let hitIdx = -1;
+        let bestDist = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < points.length; i++) {
+          const dist = Math.hypot(points[i].px.x - px.x, points[i].px.y - px.y);
+          if (dist <= DIGITIZE_HIT_RADIUS_PX && dist < bestDist) {
+            bestDist = dist;
+            hitIdx = i;
+          }
+        }
         if (hitIdx !== -1) {
           setDraggingPointIndex(hitIdx);
           setDraggingPx(points[hitIdx].px);
         }
       }
     },
-    [mode, getEventPoint, points],
+    [clearZoomDelay, mode, getEventPoint, isZoomMode, points],
   );
 
   const handleResponderMove = useCallback(
     (e: GestureResponderEvent) => {
+      if (isZoomMode && zoomActive) {
+        setZoomFocus(getEventPoint(e));
+      }
       if (mode === 'setBoxStart' || mode === 'setBoxEnd') {
         if (!dragStart) return;
         setDragCurrent(getEventPoint(e));
@@ -201,70 +317,99 @@ export function GraphCanvas({
         setDraggingPx(getEventPoint(e));
       }
     },
-    [mode, dragStart, draggingPointIndex, getEventPoint],
+    [mode, dragStart, draggingPointIndex, getEventPoint, isZoomMode, zoomActive],
   );
 
   const handleResponderRelease = useCallback(
-    (e: GestureResponderEvent) => {
-      if (mode === 'setBoxStart' || mode === 'setBoxEnd') {
-        const px = getEventPoint(e);
-        const startPx = dragStart ?? px;
-        const endPx = dragCurrent ?? px;
-        const dragged = Math.abs(endPx.x - startPx.x) > 3 || Math.abs(endPx.y - startPx.y) > 3;
-
-        if (dragged) {
-          commitBox(startPx, endPx);
-          return;
-        }
-
-        // Tap flow fallback for mobile and desktop click without dragging.
-        if (mode === 'setBoxStart') {
-          onBoxStartSet?.(px);
-        } else {
-          onBoxEndSet?.(px);
-        }
-        setDragStart(null);
-        setDragCurrent(null);
-        return;
+    async (e: GestureResponderEvent) => {
+      const releasePx = getEventPoint(e);
+      if (isZoomMode && zoomActive) {
+        setZoomFocus(releasePx);
       }
 
-      if (mode === 'setCalXStart' || mode === 'setCalXEnd' || mode === 'setCalYRef') {
-        const px = getEventPoint(e);
-        const target: CalibrationPointKey =
-          mode === 'setCalXStart' ? 'xStart' : mode === 'setCalXEnd' ? 'xEnd' : 'yRef';
-        onCalibrationPointSet?.(target, px);
-        return;
-      }
-
-      if (mode === 'digitize') {
-        // Finish interacting with an existing point.
-        if (draggingPointIndex !== null) {
-          const finalPx = draggingPx ?? getEventPoint(e);
-          const moved = Math.hypot(
-            finalPx.x - points[draggingPointIndex].px.x,
-            finalPx.y - points[draggingPointIndex].px.y,
-          );
-          if (moved > 4) {
-            // Drag → reposition (parent will locally retrace the segment).
-            if (bounds) {
-              const { realX, realY } = pixelToReal(finalPx, bounds, imgDim);
-              if (Number.isFinite(realX) && Number.isFinite(realY)) {
-                onPointMoved?.(draggingPointIndex, { px: finalPx, realX, realY });
-              }
+      try {
+        if (mode === 'pickPencilColor' || mode === 'pickGridColor') {
+          try {
+            const sampled = await sampleColorAtCanvasPoint(releasePx);
+            if (sampled) {
+              onTraceColorSampled?.(mode === 'pickPencilColor' ? 'pencil' : 'grid', sampled);
             }
-          } else {
-            // Tap without drag → delete the point.
-            onPointRemoved?.(draggingPointIndex);
+          } catch (err) {
+            console.warn('Color sampling failed', err);
           }
-          setDraggingPointIndex(null);
-          setDraggingPx(null);
           return;
         }
-        // No existing point hit → add new point.
-        commitDigitizePoint(getEventPoint(e));
+
+        if (mode === 'setBoxStart' || mode === 'setBoxEnd') {
+          const px = releasePx;
+          const startPx = dragStart ?? px;
+          const endPx = dragCurrent ?? px;
+          const dragged = Math.abs(endPx.x - startPx.x) > 3 || Math.abs(endPx.y - startPx.y) > 3;
+
+          if (dragged) {
+            commitBox(startPx, endPx);
+            return;
+          }
+
+          // Tap flow fallback for mobile and desktop click without dragging.
+          if (mode === 'setBoxStart') {
+            onBoxStartSet?.(px);
+          } else {
+            onBoxEndSet?.(px);
+          }
+          setDragStart(null);
+          setDragCurrent(null);
+          return;
+        }
+
+        if (mode === 'setCalXStart' || mode === 'setCalXEnd' || mode === 'setCalYRef') {
+          const px = releasePx;
+          const target: CalibrationPointKey =
+            mode === 'setCalXStart' ? 'xStart' : mode === 'setCalXEnd' ? 'xEnd' : 'yRef';
+          onCalibrationPointSet?.(target, px);
+          return;
+        }
+
+        if (mode === 'digitize') {
+          // Finish interacting with an existing point.
+          if (draggingPointIndex !== null) {
+            const finalPx = draggingPx ?? getEventPoint(e);
+            const moved = Math.hypot(
+              finalPx.x - points[draggingPointIndex].px.x,
+              finalPx.y - points[draggingPointIndex].px.y,
+            );
+            if (moved > 4) {
+              // Drag → reposition (parent will locally retrace the segment).
+              if (bounds) {
+                const { realX, realY } = pixelToReal(finalPx, bounds, imgDim);
+                if (Number.isFinite(realX) && Number.isFinite(realY)) {
+                  onPointMoved?.(draggingPointIndex, { px: finalPx, realX, realY });
+                }
+              }
+            } else {
+              // Tap without drag → delete the point.
+              onPointRemoved?.(draggingPointIndex);
+            }
+            setDraggingPointIndex(null);
+            setDraggingPx(null);
+            return;
+          }
+          // No existing point hit → add new point only when not too close to neighbors.
+          const nearestDist = points.reduce((best, point) => {
+            const dist = Math.hypot(point.px.x - releasePx.x, point.px.y - releasePx.y);
+            return Math.min(best, dist);
+          }, Number.POSITIVE_INFINITY);
+          if (nearestDist >= DIGITIZE_ADD_MIN_SPACING_PX) {
+            commitDigitizePoint(releasePx);
+          }
+        }
+      } finally {
+        clearZoomDelay();
+        setZoomActive(false);
+        setZoomFocus(null);
       }
     },
-    [mode, dragStart, dragCurrent, draggingPointIndex, draggingPx, getEventPoint, commitBox, onBoxStartSet, onBoxEndSet, onCalibrationPointSet, commitDigitizePoint, bounds, imgDim, points, onPointMoved],
+    [clearZoomDelay, mode, getEventPoint, isZoomMode, zoomActive, sampleColorAtCanvasPoint, onTraceColorSampled, dragStart, dragCurrent, commitBox, onBoxStartSet, onBoxEndSet, onCalibrationPointSet, draggingPointIndex, draggingPx, points, bounds, imgDim, onPointMoved, onPointRemoved, commitDigitizePoint],
   );
 
   const panResponder = PanResponder.create({
@@ -320,9 +465,35 @@ export function GraphCanvas({
     .join(' ');
 
   const instructionLabel = STEP_LABEL[mode];
+  const showZoomBubble = isZoomMode && zoomActive;
+  const bubbleSize = 150;
+  const bubbleScale = 3;
+  const focus = zoomFocus;
+  const bubbleLeft = focus ? Math.max(8, Math.min(W - bubbleSize - 8, focus.x + 16)) : 8;
+  const bubbleTop = focus ? Math.max(8, Math.min(H - bubbleSize - 8, focus.y - bubbleSize - 16)) : 8;
+  const zoomedW = W * bubbleScale;
+  const zoomedH = H * bubbleScale;
+  const zoomedLeft = focus ? bubbleSize / 2 - focus.x * bubbleScale : 0;
+  const zoomedTop = focus ? bubbleSize / 2 - focus.y * bubbleScale : 0;
 
   return (
-    <View style={styles.container} {...panResponder.panHandlers}>
+    <View
+      style={styles.container}
+      {...panResponder.panHandlers}
+      onPointerMove={(evt) => {
+        if (!showZoomBubble) return;
+        const native = evt.nativeEvent as unknown as { locationX?: number; locationY?: number };
+        if (native.locationX == null || native.locationY == null) return;
+        setZoomFocus(clampPoint(native.locationX, native.locationY));
+      }}
+      onPointerLeave={() => {
+        if (showZoomBubble) {
+          clearZoomDelay();
+          setZoomActive(false);
+          setZoomFocus(null);
+        }
+      }}
+    >
         <Image
           source={{ uri: imageUri }}
           style={StyleSheet.absoluteFill}
@@ -442,6 +613,24 @@ export function GraphCanvas({
             <Text style={styles.modeText}>{instructionLabel}</Text>
           </View>
         ) : null}
+
+        {showZoomBubble && focus ? (
+          <View style={[styles.zoomBubble, { left: bubbleLeft, top: bubbleTop, width: bubbleSize, height: bubbleSize, borderRadius: bubbleSize / 2 }]}>
+            <Image
+              source={{ uri: imageUri }}
+              style={{
+                position: 'absolute',
+                width: zoomedW,
+                height: zoomedH,
+                left: zoomedLeft,
+                top: zoomedTop,
+              }}
+              resizeMode="contain"
+            />
+            <View style={styles.zoomCrosshairVertical} />
+            <View style={styles.zoomCrosshairHorizontal} />
+          </View>
+        ) : null}
     </View>
   );
 }
@@ -465,5 +654,31 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: FontSize.sm,
     textAlign: 'center',
+  },
+  zoomBubble: {
+    position: 'absolute',
+    overflow: 'hidden',
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: '#000',
+    zIndex: 20,
+  },
+  zoomCrosshairVertical: {
+    position: 'absolute',
+    left: '50%',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    marginLeft: -0.5,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+  },
+  zoomCrosshairHorizontal: {
+    position: 'absolute',
+    top: '50%',
+    left: 0,
+    right: 0,
+    height: 1,
+    marginTop: -0.5,
+    backgroundColor: 'rgba(255,255,255,0.9)',
   },
 });

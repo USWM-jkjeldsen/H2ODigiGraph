@@ -11,9 +11,11 @@ Built for field hydrologists who need to digitize paper stage height charts from
 | Phase | Where | Action |
 |-------|-------|--------|
 | **Field** | Mobile (iOS / Android) | Photograph paper chart at the gage site, associate with a site record |
-| **Office** | Web or mobile | Set axis boundaries, tap the curve to place digitization points, export daily CSV |
+| **Office** | Web or mobile | Set axis boundaries, tap the curve to place digitization points, export daily or 4-hour CSV |
 
-**Output:** average daily stage height CSV (`date, stage_height_ft`) ready for import into your hydrologic model or database.
+**Output:** daily or 4-hour stage height CSV (`date|datetime, stage_height_ft`) ready for import into your hydrologic model or database.
+
+**Rule:** exported rows are constrained to the calibrated chart window only. No timestamp earlier than `x0` or later than `x1` is allowed.
 
 ---
 
@@ -85,7 +87,7 @@ src/
 2. **Capture** — tap 📷 on the site detail screen to photograph the paper chart. Camera captures can attach GPS metadata when location permission is granted.
 3. **Set boundaries** — tap **Set Bounds**, then tap the bottom-left axis corner and the top-right axis corner of the chart. Enter the matching real-world values (axis labels on the paper).
 4. **Digitize** — tap **Digitize** mode, then tap along the stage height curve to place points. Tap a point to remove it.
-5. **Export** — tap **Export CSV** to generate and share a daily stage height CSV.
+5. **Export** — tap **Export CSV** to generate and share daily or 4-hour stage height CSV rows, always bounded to the calibrated `x0..x1` time range.
 
 ---
 
