@@ -78,6 +78,10 @@ export default function CaptureScreen() {
       Alert.alert('Permission Required', 'Photo library access is needed to load chart images.');
       return;
     }
+    if (Platform.OS !== 'web') {
+      Alert.alert('Desktop only', 'Selecting from library is desktop-only. On phone, use Take Photo.');
+      return;
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.92,
@@ -104,7 +108,11 @@ export default function CaptureScreen() {
     };
     await saveSession(session);
     setSaving(false);
-    router.replace(`/digitize/${session.id}`);
+    if (Platform.OS === 'web') {
+      router.replace(`/digitize/${session.id}`);
+      return;
+    }
+    router.replace(`/site/${siteId}`);
   };
 
   return (
@@ -155,11 +163,13 @@ export default function CaptureScreen() {
               <Text style={styles.bigBtnSub}>Use your device camera</Text>
             </TouchableOpacity>
           ) : null}
-          <TouchableOpacity style={styles.bigBtn} onPress={openLibrary}>
-            <Text style={styles.bigBtnIcon}>🖼️</Text>
-            <Text style={styles.bigBtnLabel}>Choose from Library</Text>
-            <Text style={styles.bigBtnSub}>Select an existing image</Text>
-          </TouchableOpacity>
+          {Platform.OS === 'web' ? (
+            <TouchableOpacity style={styles.bigBtn} onPress={openLibrary}>
+              <Text style={styles.bigBtnIcon}>🖼️</Text>
+              <Text style={styles.bigBtnLabel}>Choose from Library</Text>
+              <Text style={styles.bigBtnSub}>Select an existing image</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       )}
     </View>

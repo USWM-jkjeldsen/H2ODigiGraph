@@ -8,6 +8,8 @@ import {
   Animated,
   Alert,
   Modal,
+  TextInput,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import {
@@ -46,6 +48,7 @@ export default function DigitizeScreen() {
   const [mode, setMode] = useState<CanvasMode>('idle');
   const [pendingBoxStart, setPendingBoxStart] = useState<{ x: number; y: number } | null>(null);
   const [pendingBoxEnd, setPendingBoxEnd] = useState<{ x: number; y: number } | null>(null);
+  const pendingBoxStartRef = useRef<{ x: number; y: number } | null>(null);
   const pendingRefineStart = useRef<{ x: number; y: number } | null>(null);
   const pendingRefineEnd = useRef<{ x: number; y: number } | null>(null);
   const [boxSelectionMode, setBoxSelectionMode] = useState<'bounds' | 'refine' | null>(null);
@@ -60,6 +63,18 @@ export default function DigitizeScreen() {
   const [calibrationPoints, setCalibrationPoints] = useState<
     Partial<Record<CalibrationPointKey, { x: number; y: number }>>
   >({});
+  const [guidedStep, setGuidedStep] = useState<'idle' | 'pickX0' | 'pickYRef' | 'pickX1'>('idle');
+  const [valueModalStep, setValueModalStep] = useState<'x0' | 'yRef' | 'x1' | null>(null);
+  const [valueModalError, setValueModalError] = useState<string | null>(null);
+  const [x0DateTimeDraft, setX0DateTimeDraft] = useState('');
+  const [x0StageDraft, setX0StageDraft] = useState('');
+  const [yRefStageDraft, setYRefStageDraft] = useState('');
+  const [x1DateTimeDraft, setX1DateTimeDraft] = useState('');
+  const [x1StageDraft, setX1StageDraft] = useState('');
+  const lastFrameSnapshotRef = useRef<{
+    sourceUri: string;
+    frame: { x: number; y: number; width: number; height: number };
+  } | null>(null);
   const sheetAnim = useRef(new Animated.Value(0)).current;
 
   const SHEET_HEIGHT = 580;
@@ -180,6 +195,7 @@ export default function DigitizeScreen() {
       setMode('setBoxEnd');
       return;
     }
+    pendingBoxStartRef.current = px;
     setPendingBoxStart(px);
     setMode('setBoxEnd');
   };
@@ -195,9 +211,53 @@ export default function DigitizeScreen() {
       setMode('digitize');
       return;
     }
+
+    const start = pendingBoxStartRef.current ?? pendingBoxStart ?? px;
+    const left = Math.min(start.x, px.x);
+    const right = Math.max(start.x, px.x);
+    const top = Math.min(start.y, px.y);
+    const bottom = Math.max(start.y, px.y);
+    if (right - left < 8 || bottom - top < 8) {
+      Alert.alert('Bounds too small', 'Draw a larger box around the line to crop and calibrate.');
+      return;
+    }
+
     setPendingBoxEnd(px);
-    setMode('idle');
-    openSheet();
+
+    if (session && canvasSize && canvasSize.width > 1 && canvasSize.height > 1) {
+      try {
+        const sourceUri = session.croppedImageUri ?? session.imageUri;
+        const croppedImageUri = await cropImageFromCanvasBox(sourceUri, canvasSize, {
+          left,
+          top,
+          right,
+          bottom,
+        });
+        await updateSession({
+          croppedImageUri,
+          bounds: undefined,
+          points: [],
+          extractedLinePx: [],
+          status: 'captured',
+        });
+      } catch (err) {
+        console.warn('Could not crop/zoom selected bounds', err);
+        Alert.alert('Crop failed', 'Could not crop this box. Calibration will continue on the current view.');
+      }
+    }
+
+    setPendingBoxStart(null);
+    setPendingBoxEnd(null);
+  pendingBoxStartRef.current = null;
+    setBoxSelectionMode(null);
+    setCalibrationPoints({});
+    setGuidedStep('pickX0');
+    setValueModalStep(null);
+    setMode('setCalXStart');
+    Alert.alert(
+      'Calibration Step 1 of 3',
+      'Image is now cropped to your selected box. Tap the x0 point (left-side start point on the traced line).',
+    );
   };
 
   const beginAdvancedCalibrationSelection = () => {
@@ -215,10 +275,13 @@ export default function DigitizeScreen() {
     pendingRefineStart.current = null;
     pendingRefineEnd.current = null;
     closeSheet();
+    setGuidedStep('pickX0');
+    setValueModalStep(null);
+    setValueModalError(null);
     setMode('setCalXStart');
     Alert.alert(
-      'Advanced Calibration',
-      'Tap the chart point that matches your known X start time.',
+      'Calibration Step 1 of 3',
+      'Tap the x0 point (left-side start point on the traced line).',
     );
   };
 
@@ -238,34 +301,261 @@ export default function DigitizeScreen() {
       return;
     }
 
-    setCalibrationPoints((prev) => ({ ...prev, [key]: px }));
-
-    if (key === 'xStart') {
-      setMode('setCalXEnd');
-      Alert.alert(
-        'Advanced Calibration',
-        'Now tap the chart point that matches your known X end time.',
-      );
+    if (guidedStep === 'pickX0' && key === 'xStart') {
+      setCalibrationPoints((prev) => ({ ...prev, xStart: px }));
+      setValueModalError(null);
+      setValueModalStep('x0');
+      setMode('idle');
       return;
     }
 
-    if (key === 'xEnd') {
-      setMode('setCalYRef');
-      Alert.alert(
-        'Advanced Calibration',
-        'Now tap a chart point where you know the exact stage value.',
-      );
+    if (guidedStep === 'pickYRef' && key === 'yRef') {
+      setCalibrationPoints((prev) => ({ ...prev, yRef: px }));
+      setValueModalError(null);
+      setValueModalStep('yRef');
+      setMode('idle');
       return;
     }
 
-    setMode('idle');
-    openSheet();
-    Alert.alert('Advanced Calibration', 'Reference points captured. Enter the known values and apply.');
+    if (guidedStep === 'pickX1' && key === 'xEnd') {
+      setCalibrationPoints((prev) => ({ ...prev, xEnd: px }));
+      setValueModalError(null);
+      setValueModalStep('x1');
+      setMode('idle');
+      return;
+    }
+
+    Alert.alert('Unexpected point', 'Please follow the prompts in order: x0, known Y, then x1.');
   };
 
   const toIsoDate = (dateLike: string) => {
     const parsed = new Date(dateLike.replace(' ', 'T'));
     return Number.isNaN(parsed.getTime()) ? new Date(dateLike) : parsed;
+  };
+
+  const applyGuidedCalibrationAndTrace = async () => {
+    if (!session || !imageFrame) {
+      Alert.alert('Missing data', 'Please redraw the trace box and calibration points.');
+      return;
+    }
+
+    const xStartPoint = calibrationPoints.xStart;
+    const xEndPoint = calibrationPoints.xEnd;
+    const yRefPoint = calibrationPoints.yRef;
+    if (!xStartPoint || !xEndPoint || !yRefPoint) {
+      Alert.alert('Missing points', 'Calibration requires x0, known Y, and x1 points.');
+      return;
+    }
+
+    if (xEndPoint.x <= xStartPoint.x) {
+      Alert.alert('Invalid x points', 'x1 must be to the right of x0 on the chart.');
+      return;
+    }
+
+    const x0Date = toIsoDate(x0DateTimeDraft);
+    const x1Date = toIsoDate(x1DateTimeDraft);
+    const x0Ms = x0Date.getTime();
+    const x1Ms = x1Date.getTime();
+    const x0Stage = parseFloat(x0StageDraft);
+    const yRefStage = parseFloat(yRefStageDraft);
+    const x1Stage = parseFloat(x1StageDraft);
+    if (!Number.isFinite(x0Ms) || !Number.isFinite(x1Ms) || x1Ms <= x0Ms) {
+      Alert.alert('Invalid time values', 'x1 date/time must be after x0 date/time.');
+      return;
+    }
+    if (!Number.isFinite(x0Stage) || !Number.isFinite(yRefStage) || !Number.isFinite(x1Stage)) {
+      Alert.alert('Invalid stage values', 'Stage values for x0, known Y, and x1 are required.');
+      return;
+    }
+
+    const left = imageFrame.x;
+    const right = imageFrame.x + imageFrame.width;
+    const top = imageFrame.y;
+    const bottom = imageFrame.y + imageFrame.height;
+    if (right - left < 8 || bottom - top < 8) {
+      Alert.alert('Bounds too small', 'Draw a larger trace box around the line.');
+      return;
+    }
+
+    const xDeltaPx = xEndPoint.x - xStartPoint.x;
+    if (Math.abs(xDeltaPx) < 4) {
+      Alert.alert('Invalid x calibration', 'x0 and x1 points are too close together.');
+      return;
+    }
+
+    const msPerPx = (x1Ms - x0Ms) / xDeltaPx;
+    // Use x0/x1 directly as the bounds anchors — no extrapolation to box edges
+
+    const fitPoints = [
+      { py: xStartPoint.y, stage: x0Stage },
+      { py: yRefPoint.y, stage: yRefStage },
+      { py: xEndPoint.y, stage: x1Stage },
+    ];
+    const n = fitPoints.length;
+    const sumY = fitPoints.reduce((acc, p) => acc + p.py, 0);
+    const sumS = fitPoints.reduce((acc, p) => acc + p.stage, 0);
+    const sumYY = fitPoints.reduce((acc, p) => acc + p.py * p.py, 0);
+    const sumYS = fitPoints.reduce((acc, p) => acc + p.py * p.stage, 0);
+    const den = n * sumYY - sumY * sumY;
+    if (Math.abs(den) < 1e-6) {
+      Alert.alert('Invalid y calibration', 'The selected Y calibration points are too close together.');
+      return;
+    }
+
+    const slope = (n * sumYS - sumY * sumS) / den;
+    const intercept = (sumS - slope * sumY) / n;
+    const yTopStage = intercept + slope * top;
+    const yBottomStage = intercept + slope * bottom;
+    const yMin = Math.min(yTopStage, yBottomStage);
+    const yMax = Math.max(yTopStage, yBottomStage);
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax - yMin < 0.001) {
+      Alert.alert('Invalid y scale', 'Could not compute a stable y scale from the three stage values.');
+      return;
+    }
+
+    // Anchor coordinate system exactly at x0/x1 — no data outside user-calibrated range
+    const xSpanDays = (x1Ms - x0Ms) / DAY_MS;
+    const nextBounds = {
+      originPx: { x: xStartPoint.x, y: bottom },
+      farPx: { x: xEndPoint.x, y: top },
+      xMin: 0,
+      xMax: xSpanDays,
+      yMin,
+      yMax,
+      startDate: x0Date.toISOString(),
+      endDate: x1Date.toISOString(),
+      unit: 'ft' as const,
+    };
+
+    await updateSession({
+      bounds: nextBounds,
+      points: [],
+      extractedLinePx: [],
+      status: 'bounded',
+    });
+
+    const clampNorm = (v: number) => Math.max(0, Math.min(1, v));
+    const xNormStart = clampNorm((xStartPoint.x - imageFrame.x) / imageFrame.width);
+    const xNormEnd = clampNorm((xEndPoint.x - imageFrame.x) / imageFrame.width);
+    // Use average y of x0/x1 — both were tapped directly on the line, so this
+    // points the tracer at the actual line rather than the Y-ref annotation.
+    // The image is already cropped to the box, so use a generous band (±40%) so
+    // the full excursion of the line is reachable even when x0 and x1 happen to
+    // be at similar heights (which would otherwise collapse the band to near zero).
+    const lineYAvg = (xStartPoint.y + xEndPoint.y) / 2;
+    const yNormHint = clampNorm((lineYAvg - imageFrame.y) / imageFrame.height);
+    const yNormBand = 0.40;
+
+    setAutoTracing(true);
+    try {
+      const normalized = await traceGraphLineNormalized(session.croppedImageUri ?? session.imageUri, {
+        ...FULL_TRACE_OPTIONS,
+        xNormStart,
+        xNormEnd,
+        yNormHint,
+        yNormBand,
+      });
+      if (normalized.length < 8) {
+        Alert.alert('Trace not found', 'Calibration saved, but auto-trace could not find the line confidently.');
+      } else {
+        const tracedRaw: DigiPoint[] = normalized.map((p) => {
+          const px = {
+            x: imageFrame.x + p.x * imageFrame.width,
+            y: imageFrame.y + p.y * imageFrame.height,
+          };
+          const real = pixelToReal(px, nextBounds, { width: 1, height: 1 });
+          return { px, realX: real.realX, realY: real.realY };
+        }).filter((point) => point.px.x >= xStartPoint.x && point.px.x <= xEndPoint.x);
+
+        // Keep interior traced points, but pin the series to exact x0/x1 calibration
+        // anchors so exported values always honor the entered endpoint stages.
+        const edgeTolerancePx = Math.max(1, imageFrame.width * 0.002);
+        const interior = tracedRaw.filter((point) => (
+          point.px.x > xStartPoint.x + edgeTolerancePx
+          && point.px.x < xEndPoint.x - edgeTolerancePx
+        ));
+
+        const tracedPoints: DigiPoint[] = [
+          { px: xStartPoint, realX: 0, realY: x0Stage },
+          ...interior,
+          { px: xEndPoint, realX: xSpanDays, realY: x1Stage },
+        ];
+
+        if (tracedPoints.length < 8) {
+          Alert.alert('Trace constrained', 'Calibration saved, but only a few points were found between x0 and x1.');
+          return;
+        }
+
+        await updateSession({
+          bounds: nextBounds,
+          points: tracedPoints,
+          extractedLinePx: tracedPoints.map((p) => p.px),
+          status: 'digitized',
+        });
+      }
+    } catch (err) {
+      console.warn('Guided auto trace failed', err);
+      Alert.alert('Auto trace failed', 'Calibration was saved. You can still add points manually.');
+    } finally {
+      setAutoTracing(false);
+    }
+
+    setGuidedStep('idle');
+    setValueModalStep(null);
+    setValueModalError(null);
+    setMode('digitize');
+    Alert.alert('Calibration complete', 'Scale is set from x0, known Y, and x1. Auto-trace has been applied.');
+  };
+
+  const handleValueModalContinue = async () => {
+    if (valueModalStep === 'x0') {
+      const stage = parseFloat(x0StageDraft);
+      const parsed = toIsoDate(x0DateTimeDraft);
+      if (!Number.isFinite(parsed.getTime())) {
+        setValueModalError('Enter a valid x0 date/time in YYYY-MM-DD HH:mm format.');
+        return;
+      }
+      if (!Number.isFinite(stage)) {
+        setValueModalError('Enter a valid x0 stage value.');
+        return;
+      }
+      setValueModalStep(null);
+      setValueModalError(null);
+      setGuidedStep('pickYRef');
+      setMode('setCalYRef');
+      Alert.alert('Calibration Step 2 of 3', 'Tap a point where you know the stage from the chart scale.');
+      return;
+    }
+
+    if (valueModalStep === 'yRef') {
+      const stage = parseFloat(yRefStageDraft);
+      if (!Number.isFinite(stage)) {
+        setValueModalError('Enter a valid known Y stage value.');
+        return;
+      }
+      setValueModalStep(null);
+      setValueModalError(null);
+      setGuidedStep('pickX1');
+      setMode('setCalXEnd');
+      Alert.alert('Calibration Step 3 of 3', 'Tap the x1 end point on the traced line.');
+      return;
+    }
+
+    if (valueModalStep === 'x1') {
+      const stage = parseFloat(x1StageDraft);
+      const parsed = toIsoDate(x1DateTimeDraft);
+      if (!Number.isFinite(parsed.getTime())) {
+        setValueModalError('Enter a valid x1 date/time in YYYY-MM-DD HH:mm format.');
+        return;
+      }
+      if (!Number.isFinite(stage)) {
+        setValueModalError('Enter a valid x1 stage value.');
+        return;
+      }
+      setValueModalStep(null);
+      setValueModalError(null);
+      await applyGuidedCalibrationAndTrace();
+    }
   };
 
   const formatPointTimestamp = (point: DigiPoint) => {
@@ -309,31 +599,66 @@ export default function DigitizeScreen() {
   }
 
   useEffect(() => {
-    if (!session?.croppedImageUri || !session.bounds || !imageFrame) return;
+    if (!session || !imageFrame || imageFrame.width < 2 || imageFrame.height < 2) return;
 
-    const nextOrigin = { x: imageFrame.x, y: imageFrame.y + imageFrame.height };
-    const nextFar = { x: imageFrame.x + imageFrame.width, y: imageFrame.y };
-    const currentOrigin = session.bounds.originPx;
-    const currentFar = session.bounds.farPx;
-    const isClose =
-      Math.abs(currentOrigin.x - nextOrigin.x) < 1 &&
-      Math.abs(currentOrigin.y - nextOrigin.y) < 1 &&
-      Math.abs(currentFar.x - nextFar.x) < 1 &&
-      Math.abs(currentFar.y - nextFar.y) < 1;
+    const sourceUri = session.croppedImageUri ?? session.imageUri;
+    const prev = lastFrameSnapshotRef.current;
+    if (!prev || prev.sourceUri !== sourceUri) {
+      lastFrameSnapshotRef.current = { sourceUri, frame: imageFrame };
+      return;
+    }
 
-    if (isClose) return;
+    const frameMovedOrResized =
+      Math.abs(prev.frame.x - imageFrame.x) > 1 ||
+      Math.abs(prev.frame.y - imageFrame.y) > 1 ||
+      Math.abs(prev.frame.width - imageFrame.width) > 1 ||
+      Math.abs(prev.frame.height - imageFrame.height) > 1;
 
-    const updated: DigiSession = {
-      ...session,
-      bounds: {
-        ...session.bounds,
-        originPx: nextOrigin,
-        farPx: nextFar,
-      },
-    };
-    setSession(updated);
-    void saveSession(updated);
-  }, [imageFrame, session]);
+    lastFrameSnapshotRef.current = { sourceUri, frame: imageFrame };
+    if (!frameMovedOrResized) return;
+
+    const hadCalibrationOrTrace = Boolean(session.bounds) || (session.points?.length ?? 0) > 0;
+    if (!hadCalibrationOrTrace) return;
+
+    // Screen/layout scale changed; stored pixel-space calibration is no longer valid.
+    setCalibrationPoints({});
+    setValueModalStep(null);
+    setValueModalError(null);
+    setX0DateTimeDraft('');
+    setX0StageDraft('');
+    setYRefStageDraft('');
+    setX1DateTimeDraft('');
+    setX1StageDraft('');
+    setPendingBoxStart(null);
+    setPendingBoxEnd(null);
+    pendingBoxStartRef.current = null;
+    pendingRefineStart.current = null;
+    pendingRefineEnd.current = null;
+    setPreTraceSnapshot(null);
+    setBoxSelectionMode(null);
+
+    if (session.croppedImageUri) {
+      setGuidedStep('pickX0');
+      setMode('setCalXStart');
+    } else {
+      setGuidedStep('idle');
+      setMode('setBoxStart');
+    }
+
+    void updateSession({
+      bounds: undefined,
+      points: [],
+      extractedLinePx: [],
+      status: 'captured',
+    });
+
+    Alert.alert(
+      'Screen size changed',
+      session.croppedImageUri
+        ? 'Calibration and auto-trace were cleared. Tap x0 to recalibrate this cropped view.'
+        : 'Calibration and auto-trace were cleared. Draw bounds again to continue.',
+    );
+  }, [imageFrame, session, updateSession]);
 
   // User submits start time + start stage; box tap corners define plotted area.
   const handleBoundsSave = async (values: BoundaryValues) => {
@@ -680,6 +1005,20 @@ export default function DigitizeScreen() {
     );
   }
 
+  if (Platform.OS !== 'web') {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.mobileBlockTitle}>Digitizing is desktop-only</Text>
+        <Text style={styles.mobileBlockBody}>
+          On phones, this app now only captures and attaches chart photos. Open this session on desktop web to calibrate and trace.
+        </Text>
+        <TouchableOpacity style={styles.mobileBlockBtn} onPress={() => router.back()}>
+          <Text style={styles.mobileBlockBtnText}>Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   const activePendingBoxStart = boxSelectionMode === 'refine' ? pendingRefineStart.current : pendingBoxStart;
   const activePendingBoxEnd = boxSelectionMode === 'refine' ? pendingRefineEnd.current : pendingBoxEnd;
 
@@ -710,25 +1049,73 @@ export default function DigitizeScreen() {
       {/* Toolbar */}
       <View style={styles.toolbar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.toolbarInner}>
+          {/* Before the box is drawn: offer Set Bounds. After crop: only Reset Bounds. */}
+          {!session.croppedImageUri ? (
+            <ToolBtn
+              label="Set Bounds"
+              active={boxSelectionMode === 'bounds' && (mode === 'setBoxStart' || mode === 'setBoxEnd')}
+              onPress={() => {
+                setBoxSelectionMode('bounds');
+                setPendingBoxStart(null);
+                setPendingBoxEnd(null);
+                pendingBoxStartRef.current = null;
+                setCalibrationPoints({});
+                setGuidedStep('idle');
+                setValueModalStep(null);
+                setValueModalError(null);
+                setX0DateTimeDraft('');
+                setX0StageDraft('');
+                setYRefStageDraft('');
+                setX1DateTimeDraft('');
+                setX1StageDraft('');
+                pendingRefineStart.current = null;
+                pendingRefineEnd.current = null;
+                setMode('setBoxStart');
+              }}
+            />
+          ) : (
+            <ToolBtn
+              label="Reset Bounds"
+              active={false}
+              onPress={() => {
+                // Clear the crop back to the original image and start box-drawing fresh
+                updateSession({ croppedImageUri: undefined, bounds: undefined, points: [], extractedLinePx: [], status: 'new' });
+                setBoxSelectionMode('bounds');
+                setPendingBoxStart(null);
+                setPendingBoxEnd(null);
+                pendingBoxStartRef.current = null;
+                setCalibrationPoints({});
+                setGuidedStep('idle');
+                setValueModalStep(null);
+                setValueModalError(null);
+                setX0DateTimeDraft('');
+                setX0StageDraft('');
+                setYRefStageDraft('');
+                setX1DateTimeDraft('');
+                setX1StageDraft('');
+                pendingRefineStart.current = null;
+                pendingRefineEnd.current = null;
+                setMode('setBoxStart');
+              }}
+            />
+          )}
           <ToolBtn
-            label="Set Bounds"
-            active={boxSelectionMode === 'bounds' && (mode === 'setBoxStart' || mode === 'setBoxEnd')}
-            onPress={() => {
-              setBoxSelectionMode('bounds');
-              setPendingBoxStart(null);
-              setPendingBoxEnd(null);
-              pendingRefineStart.current = null;
-              pendingRefineEnd.current = null;
-              setMode('setBoxStart');
-            }}
-          />
-          <ToolBtn
-            label="Edit Values"
+            label="Restart Calibration"
             active={false}
-            disabled={!session.bounds}
+            disabled={autoTracing || !session.croppedImageUri}
             onPress={() => {
-              // Re-open form to adjust start time/stage without re-tapping the graph box.
-              openSheet();
+              // Keep the cropped image — just wipe the calibration and start picking x0 again
+              setCalibrationPoints({});
+              setGuidedStep('pickX0');
+              setValueModalStep(null);
+              setValueModalError(null);
+              setX0DateTimeDraft('');
+              setX0StageDraft('');
+              setYRefStageDraft('');
+              setX1DateTimeDraft('');
+              setX1StageDraft('');
+              setMode('setCalXStart');
+              Alert.alert('Tap x0', 'Tap the x0 start point on the line.');
             }}
           />
           <ToolBtn
@@ -801,6 +1188,83 @@ export default function DigitizeScreen() {
           />
         </Animated.View>
       ) : null}
+
+      <Modal
+        visible={valueModalStep !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setValueModalStep(null);
+          setValueModalError(null);
+          setGuidedStep('idle');
+          setMode('idle');
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.valueModalCard}>
+            <Text style={styles.valueModalTitle}>
+              {valueModalStep === 'x0'
+                ? 'x0 values'
+                : valueModalStep === 'yRef'
+                  ? 'Known Y value'
+                  : 'x1 values'}
+            </Text>
+            <Text style={styles.valueModalHint}>
+              {valueModalStep === 'x0'
+                ? 'Enter the start date/time and stage value for x0.'
+                : valueModalStep === 'yRef'
+                  ? 'Enter the known stage value at the selected Y reference point.'
+                  : 'Enter the end date/time and stage value for x1.'}
+            </Text>
+
+            {valueModalStep === 'x0' || valueModalStep === 'x1' ? (
+              <>
+                <Text style={styles.valueLabel}>Date/time (YYYY-MM-DD HH:mm)</Text>
+                <TextInput
+                  style={styles.valueInput}
+                  value={valueModalStep === 'x0' ? x0DateTimeDraft : x1DateTimeDraft}
+                  onChangeText={valueModalStep === 'x0' ? setX0DateTimeDraft : setX1DateTimeDraft}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder={valueModalStep === 'x0' ? '2026-03-13 00:00' : '2026-03-20 00:00'}
+                  placeholderTextColor={Colors.textMuted}
+                />
+              </>
+            ) : null}
+
+            <Text style={styles.valueLabel}>Stage (ft)</Text>
+            <TextInput
+              style={styles.valueInput}
+              value={valueModalStep === 'x0' ? x0StageDraft : valueModalStep === 'yRef' ? yRefStageDraft : x1StageDraft}
+              onChangeText={valueModalStep === 'x0' ? setX0StageDraft : valueModalStep === 'yRef' ? setYRefStageDraft : setX1StageDraft}
+              keyboardType="decimal-pad"
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="e.g. 2.50"
+              placeholderTextColor={Colors.textMuted}
+            />
+
+            {valueModalError ? <Text style={styles.valueModalError}>{valueModalError}</Text> : null}
+
+            <View style={styles.valueModalActions}>
+              <TouchableOpacity
+                style={styles.valueCancelBtn}
+                onPress={() => {
+                  setValueModalStep(null);
+                  setValueModalError(null);
+                  setGuidedStep('idle');
+                  setMode('idle');
+                }}
+              >
+                <Text style={styles.valueCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.valueSaveBtn} onPress={() => void handleValueModalContinue()}>
+                <Text style={styles.valueSaveText}>{valueModalStep === 'x1' ? 'Apply + Trace' : 'Continue'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={showPointsModal}
@@ -913,6 +1377,31 @@ function ToolBtn({
 const styles = StyleSheet.create({
   root: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  mobileBlockTitle: {
+    color: Colors.text,
+    fontSize: FontSize.xl,
+    fontWeight: '700',
+    marginBottom: Spacing.sm,
+  },
+  mobileBlockBody: {
+    color: Colors.textMuted,
+    fontSize: FontSize.md,
+    textAlign: 'center',
+    maxWidth: 420,
+    marginBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+  },
+  mobileBlockBtn: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: 10,
+  },
+  mobileBlockBtnText: {
+    color: '#fff',
+    fontSize: FontSize.md,
+    fontWeight: '700',
+  },
   canvas: { flex: 1 },
   toolbar: {
     backgroundColor: Colors.primaryDark,
@@ -961,6 +1450,71 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: Spacing.md,
     gap: Spacing.sm,
+  },
+  valueModalCard: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  valueModalTitle: {
+    color: Colors.text,
+    fontSize: FontSize.lg,
+    fontWeight: '700',
+  },
+  valueModalHint: {
+    color: Colors.textMuted,
+    fontSize: FontSize.sm,
+    marginBottom: 2,
+  },
+  valueLabel: {
+    color: Colors.textSecondary,
+    fontSize: FontSize.xs,
+  },
+  valueInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: FontSize.md,
+    color: Colors.text,
+    backgroundColor: Colors.surfaceDim,
+  },
+  valueModalError: {
+    color: Colors.error,
+    fontSize: FontSize.sm,
+  },
+  valueModalActions: {
+    marginTop: Spacing.xs,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: Spacing.xs,
+  },
+  valueCancelBtn: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  valueCancelText: {
+    color: Colors.text,
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+  },
+  valueSaveBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  valueSaveText: {
+    color: '#fff',
+    fontSize: FontSize.sm,
+    fontWeight: '700',
   },
   pointsModalHeader: {
     flexDirection: 'row',

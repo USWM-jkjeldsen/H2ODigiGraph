@@ -53,7 +53,11 @@ export function interpolateDailyValues(
   for (let d = 0; d < totalDays; d++) {
     const dateObj = new Date(start);
     dateObj.setDate(start.getDate() + d);
-    const dateStr = dateObj.toISOString().slice(0, 10);
+    // Format in local time — toISOString() would produce UTC and shift dates in non-UTC timezones
+    const y = dateObj.getFullYear();
+    const mo = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dy = String(dateObj.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${mo}-${dy}`;
 
     // Map calendar day to realX space (0..xMax-xMin range)
     const dayFraction = (d / (totalDays - 1)) * (bounds.xMax - bounds.xMin) + bounds.xMin;

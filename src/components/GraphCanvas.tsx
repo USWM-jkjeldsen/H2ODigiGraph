@@ -29,9 +29,9 @@ export type CalibrationPointKey = 'xStart' | 'xEnd' | 'yRef';
 const STEP_LABEL: Partial<Record<CanvasMode, string>> = {
   setBoxStart: 'Step 1 / 2  —  Click-drag box (web) or tap bottom-left corner',
   setBoxEnd: 'Step 2 / 2  —  Release drag (web) or tap top-right corner',
-  setCalXStart: 'Advanced calibration: tap chart point for known X start time',
-  setCalXEnd: 'Advanced calibration: tap chart point for known X end time',
-  setCalYRef: 'Advanced calibration: tap chart point for known Y value',
+  setCalXStart: 'Calibration 1 / 3  —  tap x0 start point on the line',
+  setCalYRef: 'Calibration 2 / 3  —  tap a point with known Y value',
+  setCalXEnd: 'Calibration 3 / 3  —  tap x1 end point on the line',
   digitize: 'Tap to add  •  Drag point to reposition  •  Tap point to remove',
 };
 

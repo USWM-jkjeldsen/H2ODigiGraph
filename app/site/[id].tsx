@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { getSites, getSessionsForSite, deleteSite, deleteSession } from '../../src/lib/storage';
@@ -67,18 +68,31 @@ export default function SiteDetailScreen() {
     ]);
   };
 
-  const handleDeleteSession = (sessionId: string) => {
-    Alert.alert('Delete Session', 'Delete this chart session?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          await deleteSession(sessionId);
-          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+  const handleDeleteSession = async (sessionId: string, sessionDate: string) => {
+    if (Platform.OS === 'web') {
+      const ok = window.confirm(
+        `Delete chart session from ${sessionDate}?\n\nThis will permanently remove all digitized data and images from Firebase.`,
+      );
+      if (!ok) return;
+      await deleteSession(sessionId);
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      return;
+    }
+    Alert.alert(
+      'Delete Session',
+      `Permanently delete the chart session from ${sessionDate}?\n\nThis will remove all digitized data and images from Firebase.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteSession(sessionId);
+            setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   if (!site) {
@@ -119,28 +133,52 @@ export default function SiteDetailScreen() {
           data={sessions}
           keyExtractor={(s) => s.id}
           renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.sessionCard}
-              onPress={() =>
-                item.status === 'digitized' || item.status === 'bounded'
-                  ? router.push(`/digitize/${item.id}`)
-                  : item.status === 'exported'
-                    ? router.push(`/export/${item.id}`)
-                    : router.push(`/digitize/${item.id}`)
-              }
-              onLongPress={() => handleDeleteSession(item.id)}
-            >
-              <View style={[styles.statusDot, { backgroundColor: STATUS_COLOR[item.status] }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sessionDate}>{item.capturedAt.slice(0, 10)}</Text>
-                <Text style={styles.sessionStatus}>{STATUS_LABEL[item.status]}</Text>
-                <Text style={styles.sessionMeta}>
-                  {getCaptureSourceLabel(item)}
-                  {item.captureLocation ? '  •  GPS attached' : ''}
-                </Text>
-              </View>
-              <Text style={styles.chevron}>›</Text>
-            </TouchableOpacity>
+            <View style={styles.sessionCard}>
+              <TouchableOpacity
+                style={styles.sessionCardMain}
+                onPress={() => {
+                  if (Platform.OS !== 'web') {
+                    Alert.alert(
+                      'Desktop only',
+                      'Digitizing is now desktop-only. Capture photos on phone, then open this session on desktop web to calibrate and trace.',
+                    );
+                    return;
+                  }
+                  if (item.status === 'exported') {
+                    router.push(`/export/${item.id}`);
+                    return;
+                  }
+                  router.push(`/digitize/${item.id}`);
+                }}
+              >
+                <View style={[styles.statusDot, { backgroundColor: STATUS_COLOR[item.status] }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sessionDate}>{item.capturedAt.slice(0, 10)}</Text>
+                  <Text style={styles.sessionStatus}>{STATUS_LABEL[item.status]}</Text>
+                  <Text style={styles.sessionMeta}>
+                    {getCaptureSourceLabel(item)}
+                    {item.captureLocation ? '  •  GPS attached' : ''}
+                  </Text>
+                </View>
+                <Text style={styles.chevron}>›</Text>
+              </TouchableOpacity>
+              {Platform.OS === 'web' ? (
+                <TouchableOpacity
+                  style={styles.sessionDeleteBtnWeb}
+                  onPress={() => handleDeleteSession(item.id, item.capturedAt.slice(0, 10))}
+                >
+                  <Text style={styles.sessionDeleteTextWeb}>Delete</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.sessionDeleteBtn}
+                  onPress={() => handleDeleteSession(item.id, item.capturedAt.slice(0, 10))}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.sessionDeleteText}>🗑</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
           contentContainerStyle={{ paddingBottom: 100 }}
         />
@@ -191,13 +229,19 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
   sessionCard: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     backgroundColor: Colors.surface,
     marginHorizontal: Spacing.md,
     marginVertical: Spacing.xs,
     borderRadius: 10,
-    padding: Spacing.md,
     elevation: 1,
+    overflow: 'hidden',
+  },
+  sessionCardMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.md,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.06,
@@ -208,6 +252,29 @@ const styles = StyleSheet.create({
   sessionStatus: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
   sessionMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 3 },
   chevron: { fontSize: 22, color: Colors.textMuted },
+  sessionDeleteBtn: {
+    width: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 80, 80, 0.08)',
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 80, 80, 0.15)',
+  },
+  sessionDeleteText: {
+    fontSize: 18,
+  },
+  sessionDeleteBtnWeb: {
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 80, 80, 0.2)',
+  },
+  sessionDeleteTextWeb: {
+    fontSize: FontSize.sm,
+    color: '#cc3333',
+    fontWeight: '500',
+  },
   fab: {
     position: 'absolute',
     bottom: 24,
