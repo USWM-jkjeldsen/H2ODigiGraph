@@ -1342,7 +1342,7 @@ export default function DigitizeScreen() {
                   bounds: undefined,
                   points: [],
                   extractedLinePx: [],
-                  status: 'new',
+                  status: 'captured',
                   digitizedAt: undefined,
                   exportedAt: undefined,
                 });
